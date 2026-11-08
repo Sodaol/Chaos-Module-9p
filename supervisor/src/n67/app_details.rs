@@ -12,6 +12,12 @@ static mut CONFIRM:bool=false;
 static mut SELECTED:[[u8;PKG];MAX]=[[0;PKG];MAX];
 static mut SELECT_N:usize=0;
 static mut WINDOW:usize=0;
+static mut VIEW:[[u8;PKG];5]=[[0;PKG];5];
+static mut VIEW_CHECK:[bool;5]=[false;5];
+static mut VIEW_N:usize=0;
+static mut VIEW_SELECTED:usize=0;
+static mut VIEW_DONE:usize=0;
+static mut VIEW_CONFIRM:bool=false;
 static mut QUEUE:[[u8;PKG];MAX]=[[0;PKG];MAX];
 static mut QN:usize=0;
 static mut QI:usize=0;
@@ -88,11 +94,43 @@ unsafe fn queue(op:u8){if QN!=0{notice("批量操作正在进行\0".as_bytes());
  for j in 0..SELECT_N{if let Some(i)=index(&SELECTED[j]){if !excluded(&ENTRIES[i])&&!protected(&ENTRIES[i]){QUEUE[QN]=SELECTED[j];QN+=1;}}}
  if QN==0{notice("没有可操作的应用\0".as_bytes());}else{notice("批量处理中\0".as_bytes());}CONFIRM=false;
 }
-unsafe fn queue_tick(){if QN==0{return;}if QI>=QN{QN=0;if QOP==2{SELECT_N=0;}notice(if FAILED==0{"批量操作完成\0".as_bytes()}else{"部分应用操作失败\0".as_bytes()});render_req(SELECT);return;}
- let pkg=QUEUE[QI];if QOP==2&&WAIT!=0{if quick_info(&pkg)==0{DONE+=1;QI+=1;WAIT=0;render_req(SELECT);}else{WAIT+=1;if WAIT>=100{FAILED+=1;QI+=1;WAIT=0;}}return;}
+// Update existing native labels; preserve the content object and its scroll position.
+unsafe fn update_row(pid:usize,slot:usize,text:*const u8){
+ if PAGES[pid].built==0||!page_is_live(pid){return;}
+ let row=rd(page_rows_ptr(pid).add(slot));if row==0{return;}
+ let label=rd((row+0x50) as *const u32);if label!=0{fw_api::label_set_text(label,text);}
+}
+unsafe fn refresh_selection(){
+ if PAGES[SELECT].built==0||!page_is_live(SELECT){return;}
+ if !snapshot(){render_req(SELECT);return;}
+ let mut current=[[0u8;PKG];5];let mut n=0;let mut j=0;
+ for i in 0..N{let e=ENTRIES[i];if protected(&e)||excluded(&e){continue;}
+  if j>=WINDOW*5&&j<WINDOW*5+5{current[n]=e.pkg;n+=1;}j+=1;
+ }
+ if n!=VIEW_N||current!=VIEW{render_req(SELECT);return;}
+ if (VIEW_SELECTED==0)!=(SELECT_N==0){update_row(SELECT,0,if SELECT_N>0{"取消全选\0".as_ptr()}else{"全选（跳过排除项）\0".as_ptr()});}
+ if VIEW_SELECTED!=SELECT_N||VIEW_DONE!=DONE{
+  let p=core::ptr::addr_of_mut!(CAPTION) as *mut u8;let mut w=W::new(p,192);w.s("已选 ".as_bytes()).n(SELECT_N as u32).s(" / 已完成 ".as_bytes()).n(DONE as u32);w.end();update_row(SELECT,1,p);
+ }
+ if VIEW_CONFIRM!=CONFIRM{update_row(SELECT,4,if CONFIRM{"确认卸载选中？\0".as_ptr()}else{"卸载选中\0".as_ptr()});}
+ for slot in 0..n{let check=selected(&current[slot]);if VIEW_CHECK[slot]!=check{
+  let mut text=[0u8;PKG+8];let mut w=W::new(text.as_mut_ptr(),text.len());w.s(if check{b"[x] "}else{b"[ ] "}).s(bytes(&current[slot]));w.end();update_row(SELECT,7+slot,text.as_ptr());VIEW_CHECK[slot]=check;
+ }}VIEW_SELECTED=SELECT_N;VIEW_DONE=DONE;VIEW_CONFIRM=CONFIRM;
+}
+
+unsafe fn launch(pkg:&[u8;PKG])->bool{
+ if !valid_package(pkg){return false;}
+ let lookup:unsafe extern "C" fn(*const u8,*const u8)->u32=core::mem::transmute(0x0c2c1269usize);
+ if !safe_ptr(lookup(pkg.as_ptr(),core::ptr::null())){notice("应用服务未就绪或应用未安装\0".as_bytes());return false;}
+ // Stock quickapp_launch_app: pkg in r0, optional URI in r1. Never pass app id.
+ let run:unsafe extern "C" fn(*const u8,*const u8)=core::mem::transmute(0x0c4fb559usize);
+ run(pkg.as_ptr(),core::ptr::null());crate::log::pkg("请求打开 ",pkg.as_ptr());true
+}
+unsafe fn queue_tick(){if QN==0{return;}if QI>=QN{QN=0;if QOP==2{SELECT_N=0;}notice(if FAILED==0{"批量操作完成\0".as_bytes()}else{"部分应用操作失败\0".as_bytes()});refresh_selection();return;}
+ let pkg=QUEUE[QI];if QOP==2&&WAIT!=0{if quick_info(&pkg)==0{DONE+=1;QI+=1;WAIT=0;refresh_selection();}else{WAIT+=1;if WAIT>=100{FAILED+=1;QI+=1;WAIT=0;}}return;}
  if QOP==2{if uninstall(&pkg){WAIT=1;}else{FAILED+=1;QI+=1;}}else{
   if snapshot(){if let Some(i)=index(&pkg){if !excluded(&ENTRIES[i])&&change(i,QOP==0){DONE+=1;}else{FAILED+=1;}}else{FAILED+=1;}}else{FAILED+=1;}QI+=1;
- }render_req(SELECT);
+ }refresh_selection();
 }
 pub(super) unsafe fn maintain(){queue_tick();}
 pub struct DetailPage;
@@ -103,16 +141,16 @@ impl Page for DetailPage{
   let mut anchor=build_rows(c,c.title,&[(0,RowSpec::display("应用名称\0".as_bytes(),name)),(1,RowSpec::display("包名\0".as_bytes(),TARGET.as_ptr())),(2,RowSpec::display("版本\0".as_bytes(),if META.version[0]==0{"未知\0".as_ptr()}else{META.version.as_ptr()}))])?;
   let p=core::ptr::addr_of_mut!(CAPTION) as *mut u8;let mut w=W::new(p,192);w.n((SIZE.min(u32::MAX as u64)) as u32).s(if SCAN{" 字节（计算中）\0".as_bytes()}else if PARTIAL{" 字节（部分统计）\0".as_bytes()}else{" 字节\0".as_bytes()});w.end();anchor=build_rows(c,anchor,&[(3,RowSpec::display("占用空间\0".as_bytes(),p))])?;
   if let Some(i)=i {let e=ENTRIES[i];let state=if protected(&e){"系统应用（已保护）\0"}else if e.flags&1!=0{"已隐藏\0"}else{"显示中\0"};anchor=build_rows(c,anchor,&[(4,RowSpec::display("状态\0".as_bytes(),state.as_ptr()))])?;
-   if !protected(&e){anchor=build_rows(c,anchor,&[(5,RowSpec::clickable(if EXCL_CONTEXT{if excluded(&e){"取消排除\0".as_bytes()}else{"加入排除项\0".as_bytes()}}else if e.flags&1!=0{"显示该应用\0".as_bytes()}else{"隐藏该应用\0".as_bytes()}))])?;
+   if !protected(&e){anchor=build_rows(c,anchor,&[(8,RowSpec::clickable("打开应用\0".as_bytes()))])?;anchor=build_rows(c,anchor,&[(5,RowSpec::clickable(if EXCL_CONTEXT{if excluded(&e){"取消排除\0".as_bytes()}else{"加入排除项\0".as_bytes()}}else if e.flags&1!=0{"显示该应用\0".as_bytes()}else{"隐藏该应用\0".as_bytes()}))])?;
     if !excluded(&e){build_rows(c,anchor,&[(6,RowSpec::clickable(if CONFIRM{"确认卸载应用？\0".as_bytes()}else{"卸载应用\0".as_bytes()}))])?;}
    }
   }else{build_rows(c,anchor,&[(7,RowSpec::display("应用已移除或注册表不可用\0".as_bytes(),core::ptr::null()))])?;}Ok(())
  }}
- fn on_click(&self,i:usize){if i==5||i==6{REQUEST.store(i as u32,Ordering::Relaxed);}}
+ fn on_click(&self,i:usize){if i==5||i==6||i==8{REQUEST.store(i as u32,Ordering::Relaxed);}}
  fn needs_tick(&self)->bool{true}
  fn tick(&self){unsafe{
   if scan_tick(){render_req(DETAIL);}let a=REQUEST.swap(0,Ordering::Relaxed);if a==0{return;}if !snapshot(){notice("注册表不可用\0".as_bytes());return;}
-  if let Some(i)=index(&TARGET){if a==5{CONFIRM=false;if EXCL_CONTEXT{if exclude_toggle(i){notice("排除项已更新\0".as_bytes());}}else if change(i,ENTRIES[i].flags&1==0){notice("操作完成\0".as_bytes());}else{notice(LAST_ERROR);}}
+  if let Some(i)=index(&TARGET){if a==8{CONFIRM=false;if protected(&ENTRIES[i]){return;}let pkg=TARGET;if launch(&pkg){notice("已提交打开请求\0".as_bytes());}return;}if a==5{CONFIRM=false;if EXCL_CONTEXT{if exclude_toggle(i){notice("排除项已更新\0".as_bytes());}}else if change(i,ENTRIES[i].flags&1==0){notice("操作完成\0".as_bytes());}else{notice(LAST_ERROR);}}
    if a==6{if CONFIRM{let pkg=TARGET;CONFIRM=false;if uninstall(&pkg){notice("已提交卸载请求\0".as_bytes());scan_close();}}else{CONFIRM=true;}}render_req(DETAIL);
   }
  }}
@@ -127,7 +165,8 @@ impl Page for SelectionPage{
   let mut a=build_rows(c,c.title,&[(0,RowSpec::clickable(if SELECT_N>0{"取消全选\0".as_bytes()}else{"全选（跳过排除项）\0".as_bytes()})),(1,RowSpec::display(core::slice::from_raw_parts(p,w.len()+1),core::ptr::null())),(2,RowSpec::clickable("隐藏选中\0".as_bytes())),(3,RowSpec::clickable("显示选中\0".as_bytes())),(4,RowSpec::clickable(if CONFIRM{"确认卸载选中？\0".as_bytes()}else{"卸载选中\0".as_bytes()}))])?;
   let mut indices=[0usize;MAX];let mut count=0;for i in 0..N{if !protected(&ENTRIES[i])&&!excluded(&ENTRIES[i]){indices[count]=i;count+=1;}}
   let total=(count+4)/5;if WINDOW>=total{WINDOW=total.saturating_sub(1);}if WINDOW>0{a=build_rows(c,a,&[(5,RowSpec::clickable("上一页\0".as_bytes()))])?;}if WINDOW+1<total{a=build_rows(c,a,&[(6,RowSpec::clickable("下一页\0".as_bytes()))])?;}
-  for slot in 0..5{let j=WINDOW*5+slot;if j>=count{break;}let e=ENTRIES[indices[j]];let mut text=[0u8;PKG+8];let mut w=W::new(text.as_mut_ptr(),text.len());w.s(if selected(&e.pkg){b"[x] "}else{b"[ ] "}).s(bytes(&e.pkg));w.end();a=build_rows(c,a,&[(7+slot,RowSpec::clickable(&text[..w.len()+1]))])?;}Ok(())
+  VIEW=[[0;PKG];5];VIEW_N=0;VIEW_SELECTED=SELECT_N;VIEW_DONE=DONE;VIEW_CONFIRM=CONFIRM;
+  for slot in 0..5{let j=WINDOW*5+slot;if j>=count{break;}let e=ENTRIES[indices[j]];VIEW[slot]=e.pkg;VIEW_CHECK[slot]=selected(&e.pkg);VIEW_N+=1;let mut text=[0u8;PKG+8];let mut w=W::new(text.as_mut_ptr(),text.len());w.s(if selected(&e.pkg){b"[x] "}else{b"[ ] "}).s(bytes(&e.pkg));w.end();a=build_rows(c,a,&[(7+slot,RowSpec::clickable(&text[..w.len()+1]))])?;}Ok(())
  }}
  fn on_click(&self,i:usize){if i<12{REQUEST.store(i as u32+1,Ordering::Relaxed);}}
  fn needs_tick(&self)->bool{true}
@@ -135,6 +174,6 @@ impl Page for SelectionPage{
   0=>{if SELECT_N>0{SELECT_N=0;}else{for j in 0..N{let e=ENTRIES[j];if !protected(&e)&&!excluded(&e){toggle(e.pkg);}}}CONFIRM=false;},
   2=>queue(0),3=>queue(1),4=>{if CONFIRM{queue(2);}else{CONFIRM=true;}},5=>{WINDOW=WINDOW.saturating_sub(1);CONFIRM=false;},6=>{WINDOW+=1;CONFIRM=false;},
   7..=11=>{let want=WINDOW*5+i-7;let mut j=0;for k in 0..N{let e=ENTRIES[k];if !protected(&e)&&!excluded(&e){if j==want{toggle(e.pkg);break;}j+=1;}}},_=>{}
- }render_req(SELECT);}}
+ }if i==5||i==6{render_req(SELECT);}else{refresh_selection();}}}
 }
 pub static BATCH_PAGE:SelectionPage=SelectionPage;

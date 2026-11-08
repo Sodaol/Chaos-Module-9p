@@ -4,14 +4,16 @@ use crate::*;
 use crate::page::Page;
 use core::ptr::{read_volatile as rd,write_volatile as wr};
 use core::sync::atomic::{AtomicU32,Ordering};
-const MAX:usize=96;
+// System entries also occupy slots. Keep room for 64 user apps plus native entries.
+const MAX:usize=192;
+const REGISTRY_LIMIT:usize=256;
 const PKG:usize=96;
 const CAP:usize=8+MAX*(PKG+1)+4;
 const PATH:&[u8]=b"/data/chaos/n67-app-policy.bin\0";
 const TEMP:&[u8]=b"/data/chaos/n67-app-policy.tmp\0";
 #[derive(Clone,Copy)]
-struct Entry { node:u32,id:u32,flags:u8,pkg:[u8;PKG] }
-const EMPTY:Entry=Entry{node:0,id:0,flags:0,pkg:[0;PKG]};
+struct Entry { node:u32,id:u32,hash:u32,flags:u8,pkg:[u8;PKG] }
+const EMPTY:Entry=Entry{node:0,id:0,hash:0,flags:0,pkg:[0;PKG]};
 #[derive(Clone,Copy)]
 struct Policy { flags:u8,pkg:[u8;PKG] }
 const NO_POLICY:Policy=Policy{flags:0,pkg:[0;PKG]};
@@ -24,10 +26,16 @@ static mut LOADED:bool=false;
 static mut VALID:bool=false;
 static mut WINDOW:[usize;2]=[0;2];
 static mut MESSAGE:&'static [u8]=b"\0";
+static mut SNAP_ERROR:&'static [u8]="注册表或策略不可用\0".as_bytes();
 static mut LAST_ERROR:&'static [u8]=b"\0";
 static mut LINE:[u8;144]=[0;144];
 static ACTION:[AtomicU32;2]=[AtomicU32::new(0),AtomicU32::new(0)];
 static mut BATCH:Option<(usize,bool)>=None;
+static mut DRAWN:[usize;2]=[0;2];
+static mut ANCHOR:[u32;2]=[0;2];
+static mut CONTEXT:[u32;2]=[0;2];
+static mut DRAW_WINDOW:[usize;2]=[0;2];
+static mut DRAW_IDS:[[u32;6];2]=[[0;6];2];
 static mut BOOT_TICKS:u32=0;
 static mut BOOT_INDEX:usize=0;
 
@@ -67,13 +75,14 @@ unsafe fn save_policy()->bool{
     true
 }
 unsafe fn snapshot()->bool{
-    N=0;VALID=false;
+    N=0;VALID=false;SNAP_ERROR="注册表或策略不可用\0".as_bytes();
     if !read_policy(){MESSAGE="应用策略损坏，未修改应用\0".as_bytes();return false;}
     let sent=rd(fw_api::APP_REGISTRY as *const u32);
     if !safe_ptr(sent){return false;}
     let mut prev=sent;let mut node=rd((sent+4) as *const u32);let mut count=0;
     while node!=sent{
-        if count>=MAX||!safe_ptr(node)||rd(node as *const u32)!=prev{return false;}
+        if count>=REGISTRY_LIMIT{SNAP_ERROR="注册链超过256项，未修改数据\0".as_bytes();return false;}
+        if !safe_ptr(node)||rd(node as *const u32)!=prev{return false;}
         let next=rd((node+4) as *const u32);
         if !safe_ptr(next){return false;}
         let id=rd((node+0x10) as *const u16) as u32;
@@ -84,8 +93,10 @@ unsafe fn snapshot()->bool{
             while k<PKG-1{let c=rd((pkg+k as u32) as *const u8);if c==0{break;}name[k]=c;k+=1;}
             if k==0||k==PKG-1&&rd((pkg+k as u32) as *const u8)!=0{return false;}
             if core::str::from_utf8(&name[..k]).is_err(){return false;}
-            if (0..N).any(|i|ENTRIES[i].pkg==name||ENTRIES[i].id==id){return false;}
-            ENTRIES[N]=Entry{node,id,flags:rd((node+0x38) as *const u8),pkg:name};N+=1;
+            let hash=sum(&name);
+            if (0..N).any(|i|ENTRIES[i].id==id||(ENTRIES[i].hash==hash&&ENTRIES[i].pkg==name)){return false;}
+            if N>=MAX{SNAP_ERROR="应用数量超过192，未修改数据\0".as_bytes();return false;}
+            ENTRIES[N]=Entry{node,id,hash,flags:rd((node+0x38) as *const u8),pkg:name};N+=1;
         }
         count+=1;prev=node;node=next;
     }
@@ -107,7 +118,7 @@ unsafe fn desktop_record(id:u32)->Option<u32>{
     let link=rd(head as *const u32);if link!=24{return None;}
     let mut node=rd((head+4) as *const u32);let mut prev=0;let mut count=0;let mut found=0;
     while node!=0{
-        if !safe_ptr(node)||count>=160||rd((node+link) as *const u32)!=prev{return None;}
+        if !safe_ptr(node)||count>=256||rd((node+link) as *const u32)!=prev{return None;}
         if rd(node as *const u16) as u32==id{if found!=0{return None;}found=node;}
         prev=node;node=rd((node+link+4) as *const u32);count+=1;
     }
@@ -130,7 +141,7 @@ unsafe fn order_record(pkg:&[u8;PKG])->Option<u32>{
     let link=rd(head as *const u32);if link!=0x81{return None;}
     let mut node=rd((head+4) as *const u32);let mut prev=0;let mut count=0;let mut found=0;
     while node!=0{
-        if !safe_ptr(node)||count>=160||read_unaligned_word(node+link)!=prev{return None;}
+        if !safe_ptr(node)||count>=256||read_unaligned_word(node+link)!=prev{return None;}
         let mut same=true;let mut len=0;
         while len<128{let c=rd((node+len) as *const u8);
             if len as usize>=PKG||c!=pkg[len as usize]{same=false;}
@@ -206,12 +217,22 @@ pub unsafe fn maintenance(){
     }}
     BOOT_INDEX+=1;
 }
+unsafe fn append_rows(c:&PageCtx,k:usize,budget:usize)->PageResult{
+ if c.content!=CONTEXT[k]||DRAW_WINDOW[k]!=WINDOW[k]{return Ok(());}
+ for _ in 0..budget{let slot=DRAWN[k];let i=WINDOW[k]*6+slot;if slot>=6||i>=N{break;}
+  if ENTRIES[i].id!=DRAW_IDS[k][slot]{render_req(if k==0{1}else{7});return Ok(());}
+  let e=ENTRIES[i];let buf=core::ptr::addr_of_mut!(LINE) as *mut u8;let mut w=W::new(buf,144);
+  w.s(if k==1{if excluded(&e){b"[x] "}else{b"[ ] "}}else{if e.flags&1!=0{b"[-] "}else if protected(&e){b"[S] "}else{b"[+] "}});
+  let len=e.pkg.iter().position(|&b|b==0).unwrap_or(PKG);w.s(&e.pkg[..len]);w.end();
+  ANCHOR[k]=build_rows(c,ANCHOR[k],&[(slot+6,RowSpec::clickable(core::slice::from_raw_parts(buf,w.len()+1)))])?;DRAWN[k]+=1;
+ }Ok(())
+}
 pub struct AppsPage { exclude:bool }
 impl Page for AppsPage{
     fn fill_title(&self,p:*mut u8){unsafe{put_str(p,if self.exclude{"排除项\0".as_bytes()}else{"应用管理\0".as_bytes()});}}
     fn render(&self,c:&PageCtx)->PageResult{unsafe{
         let k=self.exclude as usize;let _=snapshot();let mut anchor=c.title;
-        if !VALID{build_rows(c,anchor,&[(0,RowSpec::display("注册表或策略不可用\0".as_bytes(),core::ptr::null()))])?;return Ok(());}
+        if !VALID{build_rows(c,anchor,&[(0,RowSpec::display(SNAP_ERROR,core::ptr::null()))])?;return Ok(());}
         if !self.exclude{anchor=build_rows(c,anchor,&[
             (0,RowSpec::clickable("隐藏全部（跳过排除项）\0".as_bytes())),
             (1,RowSpec::clickable("显示全部（跳过排除项）\0".as_bytes())),
@@ -221,17 +242,21 @@ impl Page for AppsPage{
         let total=(N+5)/6;if WINDOW[k]>=total{WINDOW[k]=total.saturating_sub(1);}
         if WINDOW[k]>0{anchor=build_rows(c,anchor,&[(3,RowSpec::clickable("上一页\0".as_bytes()))])?;}
         if WINDOW[k]+1<total{anchor=build_rows(c,anchor,&[(4,RowSpec::clickable("下一页\0".as_bytes()))])?;}
-        for slot in 0..6{let i=WINDOW[k]*6+slot;if i>=N{break;}let e=ENTRIES[i];let buf=core::ptr::addr_of_mut!(LINE) as *mut u8;let mut w=W::new(buf,144);
-            w.s(if self.exclude{if excluded(&e){b"[x] "}else{b"[ ] "}}else{if e.flags&1!=0{b"[-] "}else if protected(&e){b"[S] "}else{b"[+] "}});
-            let len=e.pkg.iter().position(|&b|b==0).unwrap_or(PKG);w.s(&e.pkg[..len]);w.end();
-            anchor=build_rows(c,anchor,&[(slot+6,RowSpec::clickable(core::slice::from_raw_parts(buf,w.len()+1)))])?;
-        }Ok(())
+        DRAWN[k]=0;ANCHOR[k]=anchor;CONTEXT[k]=c.content;DRAW_WINDOW[k]=WINDOW[k];
+        for slot in 0..6{let i=WINDOW[k]*6+slot;DRAW_IDS[k][slot]=if i<N{ENTRIES[i].id}else{0};}
+        append_rows(c,k,2)?;
+        Ok(())
     }}
     fn on_click(&self,i:usize){if i<12{ACTION[self.exclude as usize].store(i as u32+1,Ordering::Relaxed);}}
     fn needs_tick(&self)->bool{true}
     fn tick(&self){unsafe{
         let k=self.exclude as usize;let a=ACTION[k].swap(0,Ordering::Relaxed);
         if a==0 {
+            let pid=if self.exclude{7}else{1};
+            if !crate::ui_activity::scrolling()&&PAGES[pid].built!=0{
+             let c=PageCtx{content:PAGES[pid].content,title:PAGES[pid].title,rows:page_rows_ptr(pid)};
+             let _=append_rows(&c,k,2);
+            }
             if !self.exclude {if let Some((at,hide))=BATCH{
                 if !snapshot(){BATCH=None;MESSAGE="注册表改变，批量已停止\0".as_bytes();render_req(1);return;}
                 if at>=N{BATCH=None;MESSAGE="批量操作完成\0".as_bytes();crate::notifications::request(MESSAGE);render_req(1);}else{
@@ -247,7 +272,7 @@ impl Page for AppsPage{
         else if i==4{WINDOW[k]+=1;}
         else if !self.exclude&&i<2{BATCH=Some((0,i==0));MESSAGE="批量处理中\0".as_bytes();}
         else if i>=6{
-            let index=WINDOW[k]*6+i-6;if index>=N{return;}
+            let slot=i-6;if slot>=DRAWN[k]{return;}let index=WINDOW[k]*6+slot;if index>=N||ENTRIES[index].id!=DRAW_IDS[k][slot]{render_req(if k==0{1}else{7});return;}
             details::open(index,self.exclude);return;
         }
         if i!=3&&i!=4{crate::notifications::request(MESSAGE);}
@@ -262,14 +287,14 @@ pub static EXCLUDE_PAGE:AppsPage=AppsPage{exclude:true};
 pub unsafe fn own_visibility(show:bool)->bool{
  let sent=rd(fw_api::APP_REGISTRY as *const u32);if !safe_ptr(sent){return false;}
  let mut node=rd((sent+4) as *const u32);let mut prev=sent;
- for _ in 0..MAX{
+ for _ in 0..REGISTRY_LIMIT{
   if node==sent{return false;}
   if !safe_ptr(node)||rd(node as *const u32)!=prev{return false;}
   if rd((node+0x10) as *const u16) as u32==fw_api::CHAOS_APP_ID{
    let p=rd((node+8) as *const u32);if !safe_ptr(p){return false;}
    let name=b"com.chaos.manager\0";let mut pkg=[0u8;PKG];
    for i in 0..name.len(){if rd((p+i as u32) as *const u8)!=name[i]{return false;}pkg[i]=name[i];}
-   let e=Entry{node,id:fw_api::CHAOS_APP_ID,flags:rd((node+0x38) as *const u8),pkg};
+   let e=Entry{node,id:fw_api::CHAOS_APP_ID,hash:sum(&pkg),flags:rd((node+0x38) as *const u8),pkg};
    return set_native_impl(&e,!show,true);
   }
   prev=node;node=rd((node+4) as *const u32);

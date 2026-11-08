@@ -49,7 +49,8 @@ unsafe fn emit(prefix: &[u8], pkg: *const u8, num: Option<u32>) {
     }
     if let Some(v) = num { w.s(b" ".as_slice()); w.n(v); }
     w.end();
-    let len = w.len();
+    let mut len = w.len();
+    while len>0&&core::str::from_utf8(&b[..len]).is_err(){len-=1;}
     if len == 0 { return; }
 
     let mut fd = fw_api::open(LOG_PATH.as_ptr(), fw_api::oflag::WRONLY | fw_api::oflag::CREAT, 0o640);
@@ -113,4 +114,16 @@ pub(crate) unsafe fn tail(buf: *mut u8, cap: usize) -> usize {
         }
     }
     n
+}
+
+/// Reverse record order, not UTF-8 bytes within each record. Bounded to caller capacity.
+pub(crate) unsafe fn recent(buf:*mut u8,cap:usize)->usize{
+ let mut n=tail(buf,cap);while n>0&&*buf.add(n-1)==b'\n'{n-=1;}
+ // Keep at most 200 complete records so LVGL8's i16 geometry stays bounded.
+ let mut records=1;let mut cut=0;
+ for i in (0..n).rev(){if *buf.add(i)==b'\n'{records+=1;if records>200{cut=i+1;break;}}}
+ if cut>0{core::ptr::copy(buf.add(cut),buf,n-cut);n-=cut;}
+ let b=core::slice::from_raw_parts_mut(buf,n);b.reverse();
+ let mut at=0;for i in 0..=n{if i==n||b[i]==b'\n'{b[at..i].reverse();at=i+1;}}
+ n
 }

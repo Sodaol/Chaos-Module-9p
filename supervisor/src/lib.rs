@@ -29,6 +29,9 @@ mod system_custom;
 #[path="n67/system_language.rs"]
 mod system_language;
 #[cfg(feature="n67")]
+#[path="n67/device_options.rs"]
+mod device_options;
+#[cfg(feature="n67")]
 use system_custom::{system_version,system_text,device_name,device_model};
 mod state;
 pub(crate) use state::*;

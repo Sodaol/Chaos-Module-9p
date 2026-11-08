@@ -6,10 +6,10 @@
   "version": "2.2-alpha.51-language1",
   "title": "Chaos",
   "identity": "com.chaos.manager",
-  "pages": 32,
+  "pages": 33,
   "firmware": "3.1.190",
   "icon_path": "/data/chaos/chaos_icon.bin",
   "profile": "standard",
   "hardware_tested": false,
-  "relocations": 2192
+  "relocations": 2304
 }

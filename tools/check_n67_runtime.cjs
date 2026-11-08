@@ -51,7 +51,7 @@ local function native(f,a,b,c,d)
  const r=take(1),image=take(2),expected=Buffer.from(orig);
  for(const off of meta.relocations)expected.writeUInt32LE((orig.readUInt32LE(off)+base-meta.link_base)>>>0,off);
  if(!expected.equals(image))throw Error('actual Lua slide differs at '+base.toString(16));
- if(r.length!==8192||r.readUInt32LE(0x114)!==0x3d800800||r.readUInt32LE(0x11c)!==0xe7d40000||r.readUInt32LE(0x10)!==0xe7d4)throw Error('resident ABI');
+ if(r.length!==8192||r.readUInt32LE(0x114)!==0x3d800800||r.readUInt32LE(0x11c)!==0xe7d40000||r.readUInt32LE(0x10)!==0x0004e7d4)throw Error('resident ABI');
  lua.lua_settop(L,0);
 }
 console.log('PASS packed Lua compilation, exact decoded payloads, 8192-byte resident, actual Lua relocation at three bases, init ABI and idempotence; bounded 8KiB decode and relocation coroutine yields');

@@ -1137,4 +1137,6 @@ pub(crate) static PAGE_TABLE: [&dyn Page; PAGE_COUNT] = [
     &crate::app_manager::BATCH_PAGE,
     #[cfg(feature="n67")]
     &crate::system_language::PAGE,
+    #[cfg(feature="n67")]
+    &crate::device_options::PAGE,
 ];

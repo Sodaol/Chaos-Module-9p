@@ -4,6 +4,9 @@ import json, os, subprocess, sys
 
 ROOT = Path(__file__).resolve().parents[1]
 checks = [
+    [sys.executable, str(ROOT/'tools/test_app_upgrade.py')],
+    [sys.executable, str(ROOT/'tools/test_device_options.py')],
+    [sys.executable, str(ROOT/'tools/test_log_upgrade.py')],
     [sys.executable, str(ROOT/'tools/test_native_notice.py')],
     [sys.executable, str(ROOT/'tools/test_gh225_route.py')],
     ['node', str(ROOT/'tools/check_data_version.cjs')],

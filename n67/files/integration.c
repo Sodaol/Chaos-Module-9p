@@ -159,3 +159,21 @@ void chaos_files_poll(void){
  u32 now=((u32 (*)(void))a->tick_get)();
  if((u32)(now-a->now)>=200u)bt_app_tick((u32 *)a->timer);
 }
+
+/* Enter the audited native LVGL8 setter body without constructing a Lua state.
+ * The prologue exactly matches 0xc46c720; 0xc46c756 restores this stack frame.
+ * r4=lv_disp_t*, r3=lv_disp_rot_t. No Lua calls occur after 0xc46c776.
+ */
+__attribute__((naked)) void chaos_n67_rotate_display(u32 display,u32 rotation){
+ __asm__ volatile(
+  "push.w {r4,r5,r6,r7,r8,lr}\n"
+  "sub sp,sp,#16\n"
+  "add r7,sp,#8\n"
+  "mov r4,r0\n"
+  "mov r3,r1\n"
+  "ldr r2,1f\n"
+  "bx r2\n"
+  ".p2align 2\n"
+  "1: .word 0x0c46c777\n"
+ );
+}

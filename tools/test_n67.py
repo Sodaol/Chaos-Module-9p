@@ -32,7 +32,7 @@ class Band:
  def w8(self,p,v):self.u.mem_write(p,bytes([v]))
  def s(self,p):
   b=bytearray()
-  for i in range(4096):
+  for i in range(16384):
    c=self.u.mem_read(p+i,1)[0]
    if not c:return bytes(b)
    b.append(c)

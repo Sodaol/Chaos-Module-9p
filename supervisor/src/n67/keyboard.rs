@@ -77,6 +77,7 @@ pub(crate) enum Completion {
     SystemText,
     DeviceName,
     DeviceModel,
+    BluetoothName,
 }
 
 static mut TEXT: [u8; CAPACITY + 1] = [0; CAPACITY + 1];
@@ -111,6 +112,7 @@ pub(crate) unsafe fn open(initial: *const u8, completion: Completion) {
 
 pub(crate) unsafe fn title() -> &'static [u8] {
     match COMPLETION {
+        x if x == Completion::BluetoothName as u32 => "蓝牙名称\0".as_bytes(),
         x if x == Completion::SystemText as u32 => "系统文本\0".as_bytes(),
         x if x == Completion::DeviceName as u32 => "设备名称\0".as_bytes(),
         x if x == Completion::DeviceModel as u32 => "手环型号\0".as_bytes(),
@@ -382,6 +384,7 @@ unsafe extern "C" fn key_event(event: u32) {
                 crate::notifications::request("请输入自定义内容\0".as_bytes());return;
             }
             let saved = match COMPLETION {
+                x if x == Completion::BluetoothName as u32 => crate::device_options::request_name(core::ptr::addr_of!(TEXT) as *const u8),
                 x if x == Completion::SystemVersion as u32 => {
                     crate::system_version::save_custom(core::ptr::addr_of!(TEXT) as *const u8)
                 }

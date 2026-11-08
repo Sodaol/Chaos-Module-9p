@@ -128,7 +128,7 @@ pub static PAGE_FONTD: [u8; 6] = *b"fontd\0";
 pub static mut APP_META: [u32; 16] = [0; 16];
 
 #[cfg(feature="n67")]
-pub const PAGE_COUNT: usize = 32;
+pub const PAGE_COUNT: usize = 33;
 #[cfg(not(feature="n67"))]
 pub const PAGE_COUNT: usize = 14;                   // 注册页数(页0..页13)
 pub const MAX_PID: usize = PAGE_COUNT - 1;          // 页号上界, 所有 pid 校验统一引用它

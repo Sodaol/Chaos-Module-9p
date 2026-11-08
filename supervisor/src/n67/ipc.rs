@@ -10,7 +10,7 @@ pub unsafe extern "C" fn chaos_n67_init(base: u32, gesture: u32, event_bubble: u
     LANG = 1;
     crate::files::chaos_files_flags(gesture,press_lock);
     SHAKE_EN = 0; // User enables the N67 gesture subscription explicitly.
-    let names: [*const u8; PAGE_COUNT] = [PAGE_MAIN.as_ptr(),PAGE_DIR0.as_ptr(),PAGE_DIR1.as_ptr(),PAGE_DIR2.as_ptr(),PAGE_DIR3.as_ptr(),PAGE_TXTSUB.as_ptr(),PAGE_ICONSUB.as_ptr(),PAGE_VIEWR.as_ptr(),PAGE_WFACES.as_ptr(),PAGE_ROT.as_ptr(),PAGE_MGR.as_ptr(),PAGE_BRIGHT.as_ptr(),PAGE_PET.as_ptr(),PAGE_FONTD.as_ptr(), b"files_native\0".as_ptr(), b"settings\0".as_ptr(), b"log\0".as_ptr(), b"about\0".as_ptr(), b"agpl\0".as_ptr(), b"mpl\0".as_ptr(), b"vibration\0".as_ptr(), b"blur_zones\0".as_ptr(),b"system_about\0".as_ptr(),b"system_version\0".as_ptr(),b"system_text\0".as_ptr(),b"device_name\0".as_ptr(),b"device_model\0".as_ptr(),b"keyboard\0".as_ptr(),b"app_list\0".as_ptr(),b"app_detail\0".as_ptr(),b"app_batch\0".as_ptr(),b"language\0".as_ptr()];
+    let names: [*const u8; PAGE_COUNT] = [PAGE_MAIN.as_ptr(),PAGE_DIR0.as_ptr(),PAGE_DIR1.as_ptr(),PAGE_DIR2.as_ptr(),PAGE_DIR3.as_ptr(),PAGE_TXTSUB.as_ptr(),PAGE_ICONSUB.as_ptr(),PAGE_VIEWR.as_ptr(),PAGE_WFACES.as_ptr(),PAGE_ROT.as_ptr(),PAGE_MGR.as_ptr(),PAGE_BRIGHT.as_ptr(),PAGE_PET.as_ptr(),PAGE_FONTD.as_ptr(), b"files_native\0".as_ptr(), b"settings\0".as_ptr(), b"log\0".as_ptr(), b"about\0".as_ptr(), b"agpl\0".as_ptr(), b"mpl\0".as_ptr(), b"vibration\0".as_ptr(), b"blur_zones\0".as_ptr(),b"system_about\0".as_ptr(),b"system_version\0".as_ptr(),b"system_text\0".as_ptr(),b"device_name\0".as_ptr(),b"device_model\0".as_ptr(),b"keyboard\0".as_ptr(),b"app_list\0".as_ptr(),b"app_detail\0".as_ptr(),b"app_batch\0".as_ptr(),b"language\0".as_ptr(),b"device_options\0".as_ptr()];
     for pid in 0..PAGE_COUNT {
         if pid==14 { continue; }
         let p = if pid == 0 { base+0x40 } else { base+0x1000+(pid as u32-1)*112 };
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn chaos_n67_init(base: u32, gesture: u32, event_bubble: u
     // Registrar verification checks the first page and its numeric key.
     core::ptr::write_volatile((base+0x11c) as *mut u32,APP_ID<<16);
     core::ptr::write_volatile((base+0x114) as *mut u32,base+0x800);
-    crate::log::line("Chaos N67 2.2-alpha.41 初始化");
+    crate::log::line("Chaos N67 2.2-alpha.52-six1 初始化");
     shake_arm();
     0x4e363743
 }

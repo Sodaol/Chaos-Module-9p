@@ -74,4 +74,11 @@ mod tests{
  #[test]fn escaped_names(){let m=manifest(br#"{"names":[{"lang":"en","value":"fallback"},{"lang":"defaults","value":"\u624b\u74b0 \ud83d\ude3a"}],"version":"v\"1"}"#).unwrap();assert_eq!(s(&m.name),"手環 😺");assert_eq!(s(&m.version),"v\"1");}
  #[test]fn corrupt_and_duplicate_fail(){for b in [br#"{"package":"a","name":"bad\uD800"}"#.as_slice(),br#"[{"package":"a"},{"package":"a"}]"#,br#"{"package":"a","name":"A","name":"B"}"#,br#"{"package":"a",}"#,br#"{"version":01}"#,br#"[true false]"#,br#"{} junk"#]{assert!(registry(b,b"a").is_err());}}
  #[test]fn utf8_truncation(){let mut b=std::string::String::from("{\"name\":\"");for _ in 0..80{b.push('環');}b.push_str("\"}");let m=manifest(b.as_bytes()).unwrap();assert!(core::str::from_utf8(&m.name).is_ok());assert!(s(&m.name).len()<=127);}
+ #[test]fn metadata_64k_boundary(){
+  let head=br#"{"package":"test.app","name":"Test","padding":""#;
+  let mut data=head.to_vec();data.resize(65534,b'x');data.extend_from_slice(b"\"}");
+  assert_eq!(data.len(),65536);assert_eq!(s(&registry(&data,b"test.app").unwrap().unwrap().name),"Test");
+  data.insert(data.len()-2,b'x');assert!(registry(&data,b"test.app").is_err());
+ }
+
 }

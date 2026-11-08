@@ -2,8 +2,9 @@ from pathlib import Path
 import struct
 from test_port_pages import PortBand
 from unicorn.arm_const import *
-# Reuse only the real-native-launcher fixture, not its unrelated test cases.
-p=Path(__file__).with_name('test_app_manager.py');ns={'__file__':str(p)};exec(compile(p.read_text('utf8').split('\nfor base in ')[0],str(p),'exec'),ns);AppBand=ns['AppBand']
+from test_app_manager import AppBand
+import subprocess
+subprocess.run(['node',str(Path(__file__).with_name('check_uninstall_flag.cjs'))],check=True)
 blob=(Path(__file__).resolve().parents[1]/'n67/generated/protected-resident-test.bin').read_bytes()
 for base in (0x1d100000,0x1d340000,0x1c900000):
  b=AppBand(base);b.sym['native_load_info']=0xc2a308d

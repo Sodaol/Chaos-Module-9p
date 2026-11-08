@@ -326,7 +326,7 @@ pub(crate) unsafe fn chaos_row_dispatch(idx: usize, event: u32) -> u32 {
     } else {
         if code != fw_api::ev::CLICKED { return 0; }
         #[cfg(feature="n67")]
-        if pid != crate::extra_pages::LOG { crate::log::kv("操作 页×100+行", (pid * 100 + idx) as u32); }
+        if pid != crate::extra_pages::LOG && !(pid==30&&idx>=7) { crate::log::kv("操作 页×100+行", (pid * 100 + idx) as u32); }
         page_ref.on_click(idx);
     }
     0
