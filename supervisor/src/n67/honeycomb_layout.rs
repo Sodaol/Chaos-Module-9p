@@ -5,9 +5,6 @@ pub(crate) const WIDTH: i32 = 336;
 pub(crate) const HEIGHT: i32 = 480;
 const ONE: i32 = 256;
 const DRAG_THRESHOLD: i32 = 10;
-pub(crate) const ZOOM_MIN: i32 = 128;
-pub(crate) const ZOOM_MAX: i32 = 384;
-pub(crate) const ZOOM_EDGE: i32 = 28;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -54,14 +51,9 @@ pub(crate) struct Frame {
 }
 
 pub(crate) fn frame(index: usize, pan: Point) -> Frame {
-    frame_zoom(index, pan, ONE)
-}
-
-pub(crate) fn frame_zoom(index: usize, pan: Point, zoom: i32) -> Frame {
     let p = position(index);
-    let zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
-    let dx = p.x * zoom / ONE + pan.x;
-    let dy = p.y * zoom / ONE + pan.y;
+    let dx = p.x + pan.x;
+    let dy = p.y + pan.y;
     let visible = dx.abs() < WIDTH / 2 + 56 && dy.abs() < HEIGHT / 2 + 56;
     if !visible {
         return Frame { x: 0, y: 0, diameter: 1, visible: false };
@@ -72,7 +64,7 @@ pub(crate) fn frame_zoom(index: usize, pan: Point, zoom: i32) -> Frame {
     Frame {
         x: WIDTH / 2 + dx,
         y: HEIGHT / 2 + dy,
-        diameter: ((84 - (56 * radial / 65536) as i32) * zoom / ONE).max(1),
+        diameter: 84 - 56 * radial / 65536,
         visible,
     }
 }
@@ -86,8 +78,6 @@ pub(crate) struct Camera {
     dragged: bool,
     stop_tap: bool,
     travel: i32,
-    zoom: i32,
-    zooming: bool,
     bounds_count: usize,
     min: Point,
     max: Point,
@@ -109,8 +99,6 @@ impl Camera {
             dragged: false,
             stop_tap: false,
             travel: 0,
-            zoom: ONE,
-            zooming: false,
             bounds_count: usize::MAX,
             min: Point { x: 0, y: 0 },
             max: Point { x: 0, y: 0 },
@@ -122,24 +110,14 @@ impl Camera {
             y: self.pan.y / ONE,
         }
     }
-    pub(crate) fn zoom(&self) -> i32 {
-        self.zoom
-    }
     pub(crate) fn frame(&self, index: usize) -> Frame {
-        frame_zoom(index, self.pan(), self.zoom)
+        frame(index, self.pan())
     }
-    pub(crate) fn zooming(&self) -> bool { self.pressed && self.zooming }
 
     pub(crate) fn moving(&self) -> bool {
         self.pressed || self.velocity.x != 0 || self.velocity.y != 0
     }
     pub(crate) fn press(&mut self) {
-        self.press_at(Point {
-            x: WIDTH / 2,
-            y: HEIGHT / 2,
-        });
-    }
-    pub(crate) fn press_at(&mut self, point: Point) {
         // A tap which catches a moving cloud stops it without launching an app.
         self.stop_tap = self.velocity.x != 0 || self.velocity.y != 0;
         self.velocity = Point::default();
@@ -147,45 +125,18 @@ impl Camera {
         self.pressed = true;
         self.dragged = false;
         self.travel = 0;
-        self.zooming =
-            point.x >= WIDTH - ZOOM_EDGE && point.x < WIDTH && point.y >= 0 && point.y < HEIGHT;
-        self.stop_tap |= self.zooming;
     }
-    pub(crate) fn drag(&mut self, delta: Point, count: usize) -> bool {
+    pub(crate) fn drag(&mut self, d: Point, count: usize) -> bool {
         if !self.pressed {
             return false;
         }
-        let d = Point {
-            x: delta.x.clamp(-128, 128),
-            y: delta.y.clamp(-128, 128),
-        };
-        self.travel = (self.travel
-            + if self.zooming {
-                d.y.abs()
-            } else {
-                d.x.abs() + d.y.abs()
-            })
-        .min(1024);
+        self.travel = (self.travel + d.x.abs() + d.y.abs()).min(1024);
         self.pending.x += d.x;
         self.pending.y += d.y;
         if !self.dragged && self.travel < DRAG_THRESHOLD {
             return false;
         }
         self.dragged = true;
-        if self.zooming {
-            let next = (self.zoom - self.pending.y * 2).clamp(ZOOM_MIN, ZOOM_MAX);
-            self.pending = Point::default();
-            if next == self.zoom {
-                return false;
-            }
-            // Scale about the viewport centre, retaining the app under it.
-            self.pan.x = self.pan.x * next / self.zoom;
-            self.pan.y = self.pan.y * next / self.zoom;
-            self.zoom = next;
-            self.bounds_count = usize::MAX;
-            self.clamp(count);
-            return true;
-        }
         let old = self.pan;
         self.pan.x += self.pending.x * ONE;
         self.pan.y += self.pending.y * ONE;
@@ -200,7 +151,7 @@ impl Camera {
     pub(crate) fn release(&mut self) {
         self.pressed = false;
         // Keep the drag latch until the NEXT press, including SHORT_CLICKED.
-        if !self.dragged || self.zooming {
+        if !self.dragged {
             self.velocity = Point::default();
         }
     }
@@ -246,7 +197,7 @@ impl Camera {
     }
 
     fn top_limit(&self) -> i32 {
-        -self.min.y * self.zoom + (HEIGHT / 2 - 48) * ONE
+        -self.min.y * ONE + (HEIGHT / 2 - 48) * ONE
     }
 
     pub(crate) fn at_top(&mut self, count: usize) -> bool {
@@ -259,11 +210,11 @@ impl Camera {
         let x = self
             .pan
             .x
-            .clamp(-self.max.x * self.zoom - (WIDTH / 2 - 48) * ONE, -self.min.x * self.zoom + (WIDTH / 2 - 48) * ONE);
+            .clamp(-self.max.x * ONE - (WIDTH / 2 - 48) * ONE, -self.min.x * ONE + (WIDTH / 2 - 48) * ONE);
         let y = self
             .pan
             .y
-            .clamp(-self.max.y * self.zoom - (HEIGHT / 2 - 48) * ONE, self.top_limit());
+            .clamp(-self.max.y * ONE - (HEIGHT / 2 - 48) * ONE, self.top_limit());
         if x != self.pan.x {
             self.velocity.x = 0;
         }

@@ -30,7 +30,7 @@ pub unsafe extern "C" fn chaos_n67_init(base: u32, gesture: u32, event_bubble: u
     // Registrar verification checks the first page and its numeric key.
     core::ptr::write_volatile((base+0x11c) as *mut u32,APP_ID<<16);
     core::ptr::write_volatile((base+0x114) as *mut u32,base+0x800);
-    crate::log::line("Chaos N67 2.2-alpha.58-honeycomb5 初始化");
+    crate::log::line("Chaos N67 2.2-alpha.59-honeycomb6 初始化");
     shake_arm();
     0x4e363743
 }

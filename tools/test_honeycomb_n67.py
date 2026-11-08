@@ -220,11 +220,16 @@ for base in (0x1d100000, 0x1d340000, 0x1c900000):
     b.send(overlay, 1, (168, 240))
     b.send(overlay, 8)
     b.native_timer(b.timers[-1])
-    original_width = b.objects[first]['w']
+    # A single fast diagonal sample from the former zoom strip moves both axes.
+    assert b.call('chaos_honeycomb_input', 0, 0, 0, 30) == 1
     b.send(overlay, 1, (325, 250))
-    b.send(overlay, 2, (325, 210))
-    b.native_timer(b.timers[-1])
-    assert b.objects[first]['w'] != original_width
+    b.send(overlay, 2, (150, 100))
+    frame = b.alloc(16)
+    b.call('chaos_honeycomb_frame', 0, frame)
+    assert struct.unpack('<ii', b.u.mem_read(frame, 8)) == (-7, 90)
+    b.send(overlay, 2, (290, 190))
+    b.call('chaos_honeycomb_frame', 0, frame)
+    assert struct.unpack('<ii', b.u.mem_read(frame, 8)) == (133, 180)
     b.send(overlay, 8)
     b.w32(0x200cae00, 0)
     b.w8(manager+0x6d, 1)
@@ -254,7 +259,7 @@ for base in (0x1d100000, 0x1d340000, 0x1c900000):
     b.call('chaos_honeycomb_frame', 0, frame)
     assert struct.unpack('<ii', b.u.mem_read(frame, 8)) == (220, 280)
     assert b.call('chaos_honeycomb_input', 8, 0, 0, 1) == 0
-    print(f'PASS honeycomb {base:x}: default off, settings switch, staged layout, two-axis drag, native launch, click suppression, zoom, first refresh, cache reuse, native swipe-back dispatch and stock editing fallback')
+    print(f'PASS honeycomb {base:x}: default off, settings switch, staged layout, two-axis drag, native launch, click suppression, right-edge diagonal drag, first refresh, cache reuse, native swipe-back dispatch and stock editing fallback')
 
 b = HoneycombBand(0x1d100000)
 b.call('chaos_n67_init', 0x3d800000, 65536, 131072, 8192)

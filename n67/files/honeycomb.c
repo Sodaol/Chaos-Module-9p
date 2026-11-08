@@ -146,9 +146,8 @@ static void hc_ui_event(u32 e) {
   return;
  }
  if (code == 3u || code == 8u) {
-  if (code == 3u) { s->pressed_item = 0; s->exit_pending = 0; }
-  else s->exit_pending = chaos_honeycomb_input(code, 0, 0, s->count);
-  if (code == 3u) chaos_honeycomb_input(code, 0, 0, s->count);
+  s->exit_pending = chaos_honeycomb_input(code, 0, 0, s->count);
+  if (code == 3u) s->pressed_item = 0;
   hc_wake_motion(s);
   return;
  }
@@ -199,8 +198,7 @@ static void hc_set_diameter(hc_Item *item,u32 diameter){
 }
 
 static void hc_update_frames(hc_State *s) {
- u32 defer_scale = chaos_honeycomb_input(13, 0, 0, s->count) &&
-                   !chaos_honeycomb_input(14, 0, 0, s->count);
+ u32 defer_scale = chaos_honeycomb_input(13, 0, 0, s->count);
  s->rescale_pending = defer_scale;
  for (u32 i = 0; i < s->built; ++i) {
   hc_Item *item = &s->items[i];

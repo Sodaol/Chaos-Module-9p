@@ -29,8 +29,8 @@ unsafe extern "C" fn chaos_honeycomb_input(code: u32, x: i32, y: i32, count: usi
         1 => {
             START = point;
             EXIT_DISTANCE = false;
-            TOP_PULL = x < layout::WIDTH - layout::ZOOM_EDGE && CAMERA.at_top(count);
-            CAMERA.press_at(point);
+            TOP_PULL = CAMERA.at_top(count);
+            CAMERA.press();
         },
         2 => {
             let down = y - START.y;
@@ -55,7 +55,6 @@ unsafe extern "C" fn chaos_honeycomb_input(code: u32, x: i32, y: i32, count: usi
             return changed as u32;
         }
         13 => return CAMERA.moving() as u32,
-        14 => return CAMERA.zooming() as u32,
         7 => return CAMERA.can_click() as u32,
         _ => {}
     }
