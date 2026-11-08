@@ -36,7 +36,7 @@ unsafe extern "C" fn chaos_honeycomb_input(code: u32, x: i32, y: i32, count: usi
             let down = y - START.y;
             let across = (x - START.x).abs();
             EXIT_DISTANCE = TOP_PULL && down >= 72 && down >= across * 2;
-            let changed = CAMERA.drag(Point { x: x - LAST.x, y: y - LAST.y }, count);
+            let changed = CAMERA.drag(Point { x: x - LAST.x, y: y - LAST.y });
             LAST = point;
             if changed { crate::ui_activity::note_scroll(); }
             return changed as u32;

@@ -279,6 +279,32 @@ def drag(points, end=8):
     b.send(overlay, end)
     b.native_timer(b.timers[-1])
 
+# While held, both axes keep tracking after crossing the content bounds.
+b.send(overlay, 1, (12, 12))
+b.send(overlay, 2, (290, 365))
+frame = b.alloc(16)
+
+def center():
+    b.call('chaos_honeycomb_frame', 0, frame)
+    return struct.unpack('<ii', b.u.mem_read(frame, 8))
+
+# Use a second, smaller move still beyond the old horizontal boundary
+# and inside the frame culling margin, then reverse while still held.
+b.send(overlay, 2, (162, 232))
+assert center() == (318, 460)
+b.native_timer(b.timers[-1])
+assert center() == (318, 460)
+b.send(overlay, 2, (142, 212))
+assert center() == (298, 440)
+b.send(overlay, 8)
+b.native_timer(b.timers[-1])
+assert center() == (295, 438)
+for _ in range(28):
+    b.native_timer(b.timers[-1])
+assert center() == (288, 432)
+assert not b.back_posts
+b.call('chaos_honeycomb_input', 0, 0, 0, 1)
+
 drag([(168, 60), (168, 180), (168, 300)])
 drag([(168, 120), (168, 160)])
 drag([(168, 120), (168, 210)], end=3)

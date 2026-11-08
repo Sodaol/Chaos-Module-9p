@@ -4,7 +4,7 @@ pub(crate) const MAX_ICONS: usize = 192;
 pub(crate) const WIDTH: i32 = 336;
 pub(crate) const HEIGHT: i32 = 480;
 const ONE: i32 = 256;
-const DRAG_THRESHOLD: i32 = 10;
+const DRAG_THRESHOLD: i32 = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -75,6 +75,7 @@ pub(crate) struct Camera {
     velocity: Point,
     pending: Point,
     pressed: bool,
+    settling: bool,
     dragged: bool,
     stop_tap: bool,
     travel: i32,
@@ -96,6 +97,7 @@ impl Camera {
             velocity: Point { x: 0, y: 0 },
             pending: Point { x: 0, y: 0 },
             pressed: false,
+            settling: false,
             dragged: false,
             stop_tap: false,
             travel: 0,
@@ -115,18 +117,19 @@ impl Camera {
     }
 
     pub(crate) fn moving(&self) -> bool {
-        self.pressed || self.velocity.x != 0 || self.velocity.y != 0
+        self.pressed || self.settling || self.velocity.x != 0 || self.velocity.y != 0
     }
     pub(crate) fn press(&mut self) {
         // A tap which catches a moving cloud stops it without launching an app.
-        self.stop_tap = self.velocity.x != 0 || self.velocity.y != 0;
+        self.stop_tap = self.moving();
+        self.settling = false;
         self.velocity = Point::default();
         self.pending = Point::default();
         self.pressed = true;
         self.dragged = false;
         self.travel = 0;
     }
-    pub(crate) fn drag(&mut self, d: Point, count: usize) -> bool {
+    pub(crate) fn drag(&mut self, d: Point) -> bool {
         if !self.pressed {
             return false;
         }
@@ -145,7 +148,6 @@ impl Camera {
             x: d.x.clamp(-24, 24) * ONE,
             y: d.y.clamp(-24, 24) * ONE,
         };
-        self.clamp(count);
         self.pan != old
     }
     pub(crate) fn release(&mut self) {
@@ -164,22 +166,37 @@ impl Camera {
         !self.dragged && !self.stop_tap
     }
     pub(crate) fn tick(&mut self, count: usize) -> bool {
-        if self.pressed || (self.velocity.x == 0 && self.velocity.y == 0) {
+        if self.pressed {
             return false;
         }
-        self.pan.x += self.velocity.x;
-        self.pan.y += self.velocity.y;
-        self.clamp(count);
-        self.velocity.x = self.velocity.x * 7 / 8;
-        self.velocity.y = self.velocity.y * 7 / 8;
-        if self.velocity.x.abs() < 64 {
-            self.velocity.x = 0;
-        }
-        if self.velocity.y.abs() < 64 {
-            self.velocity.y = 0;
-        }
-        true
+        self.update_bounds(count);
+        let old = self.pan;
+        let left = -self.max.x * ONE - (WIDTH / 2 - 48) * ONE;
+        let right = -self.min.x * ONE + (WIDTH / 2 - 48) * ONE;
+        let bottom = -self.max.y * ONE - (HEIGHT / 2 - 48) * ONE;
+        let top = self.top_limit();
+        self.pan.x = Self::settle(self.pan.x, &mut self.velocity.x, left, right);
+        self.pan.y = Self::settle(self.pan.y, &mut self.velocity.y, bottom, top);
+        self.settling = !(left..=right).contains(&self.pan.x) || !(bottom..=top).contains(&self.pan.y);
+        self.pan != old
     }
+
+    fn settle(position: i32, velocity: &mut i32, min: i32, max: i32) -> i32 {
+        let bounded = position.clamp(min, max);
+        if bounded != position {
+            *velocity = 0;
+            let excess = position - bounded;
+            return if excess.abs() < ONE { bounded } else { position - excess / 4 };
+        }
+        let next = position + *velocity;
+        *velocity = if next < min || next > max || velocity.abs() < 64 {
+            0
+        } else {
+            *velocity * 7 / 8
+        };
+        next.clamp(min, max)
+    }
+
     fn update_bounds(&mut self, count: usize) {
         let count = count.min(MAX_ICONS);
         if self.bounds_count != count {
@@ -203,24 +220,5 @@ impl Camera {
     pub(crate) fn at_top(&mut self, count: usize) -> bool {
         self.update_bounds(count);
         self.pan.y >= self.top_limit()
-    }
-
-    fn clamp(&mut self, count: usize) {
-        self.update_bounds(count);
-        let x = self
-            .pan
-            .x
-            .clamp(-self.max.x * ONE - (WIDTH / 2 - 48) * ONE, -self.min.x * ONE + (WIDTH / 2 - 48) * ONE);
-        let y = self
-            .pan
-            .y
-            .clamp(-self.max.y * ONE - (HEIGHT / 2 - 48) * ONE, self.top_limit());
-        if x != self.pan.x {
-            self.velocity.x = 0;
-        }
-        if y != self.pan.y {
-            self.velocity.y = 0;
-        }
-        self.pan = Point { x, y };
     }
 }
