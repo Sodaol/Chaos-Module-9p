@@ -1,0 +1,12 @@
+{
+  "ap_sha256": "3e264bc267431ec71843cc7c2e4acd928b9280ea39ee1cd888636adcebabf82f",
+  "romfs_file_offset": "0x56bd2c",
+  "files": {
+    "/init.d/rcS": "set +e\nset +e\nlosetup /dev/loop0 /system/zoneinfo/zoneinfo.img\nmount -t romfs /dev/loop0 /mnt/zoneinfo\nif [ ! -d /data/nobusiness ]; then\nmiwear_bluetooth &\nusleep 1\nfi\nmiwear_algo_service &\nmiwear_activity_service &\nmiwear_capture_service &\nnfc_stack_bridge &\nif [ ! -d /data/nobusiness ]; then\nmiwear &\nfi\nif [ -d /data/nolowpower ];then\npmconfig stay normal\nfi\n",
+    "/init.d/rc.sysinit": "set +e\n       mount -t procfs \"/proc\"\nmount -t tmpfs /tmp\nmiwear_inject\npmconfig stay normal\necho \"mount /system\"\nmount -t yaffs -o ro /dev/nand_system /system\necho \"mount /data\"\nmount -t yaffs -o autoformat /dev/nand_data /data\noffline_log start &\nkvdb_init\nkvdbd &\nmiwear_rtc_checker\ncharger_manage &\nhealthd &\n"
+  },
+  "miwear_inject_entry": "0x0c14eac9",
+  "miwear_inject_behavior": "Sets libuv and algorithm allocator callbacks. Does not load a user module or a /data script.",
+  "p67_reference": "work/p67-upstream/installer/chaos_installer.lua: build_chaos_sh uses insmod and /data/rc.d; rc_dir_ready requires an external autorun manager.",
+  "conclusion": "No /data boot-script consumer found in these init scripts. Persistent native autostart is not implemented by this watchface package."
+}

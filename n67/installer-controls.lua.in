@@ -1,0 +1,59 @@
+settings_open:onevent(lvgl.EVENT.SHORT_CLICKED,function() view_show(true) end)
+settings_back:onevent(lvgl.EVENT.SHORT_CLICKED,function() view_show(false) end)
+
+local function preference(path,name,y,default,two)
+ local enabled=default
+ local f=io.open(path,'rb');if f then local b=f:read(1);f:close();if b==string.char(0) or b==string.char(1) then enabled=b==string.char(1) end end
+ local o,lb=button(settings_view,'',y,'ghost')
+ o:set{h=56}
+ local function refresh()lb:set{text=name..(enabled and '：开' or '：关')}end
+ refresh()
+ o:onevent(lvgl.EVENT.SHORT_CLICKED,function()
+  if work or (armed and path~='/data/chaos/launcher.cfg') then compatibility:set{text='重新启动安装器后修改入口'};return end
+  local ok=pcall(function()
+   ensure_chaos_dir()
+   local data=string.char(enabled and 0 or 1)..(two and string.char(0) or '')
+   local w=assert(io.open(path,'wb'));assert(w:write(data));assert(w:close())
+   local check=assert(io.open(path,'rb'));local value=check:read('*a');check:close();assert(value==data)
+   enabled=not enabled;refresh()
+  end)
+  if not ok then compatibility:set{text='入口设置保存失败'}end
+ end)
+ keep(o);keep(lb)
+end
+preference('/data/chaos/native-entries.cfg','注入系统设置',-12,true,true)
+preference('/data/chaos/launcher.cfg','应用列表显示',52,true,false)
+settings_back:set{h=56,align={type=lvgl.ALIGN.CENTER,x_ofs=0,y_ofs=180}}
+
+local restart,restart_label=button(main_view,'重启',80,'ghost')
+local restarting=false
+restart:onevent(lvgl.EVENT.SHORT_CLICKED,function()
+ if work then compatibility:set{text='运行中，请等待'};return end
+ if restarting then return end
+ restarting=true;restart_label:set{text='正在重启'}
+ local t=lvgl.Timer{period=500,repeat_count=1,cb=function()
+  local ok,result=pcall(os.execute,'reboot')
+  if not ok or (result~=true and result~=0) then compatibility:set{text='重启请求失败，请手动重启'} end
+  restarting=false;restart_label:set{text='重启'}
+ end}
+ keep(t)
+end)
+local reset,reset_label=button(main_view,'重置设置',158,'danger')
+reset:set{h=56}
+local reset_armed=false
+reset:onevent(lvgl.EVENT.SHORT_CLICKED,function()
+ if work then compatibility:set{text='运行中，请等待'};return end
+ if not reset_armed then reset_armed=true;compatibility:set{text='再按一次确认，保留导入素材'};return end
+ reset_armed=false
+ local ok=pcall(function()
+  for _,path in ipairs({AUTO_PATH,'/data/chaos/native-entries.cfg','/data/chaos/launcher.cfg',
+   '/data/chaos/applist.cfg','/data/chaos/n67-beautify-a.bin','/data/chaos/n67-beautify-b.bin',
+   '/data/chaos/n67-background.cfg','/data/chaos/n67-system-about.bin'}) do
+   local f=io.open(path,'rb')
+   if f then f:close();assert(os.remove(path),'设置无法删除') end
+  end
+ end)
+ if ok then automatic=false;auto_caption();compatibility:set{text='设置已重置，请重启'}
+ else compatibility:set{text='部分设置未清除，请重试'}end
+end)
+keep(restart);keep(restart_label);keep(reset);keep(reset_label)

@@ -9,62 +9,13 @@ use super::*;
 // 2. LVGL 对象（thunk → 段B）
 // ===========================================================================
 
-/// `lv_obj_create(parent, options)` 创建通用基础对象。静态核对
-///
-/// 原生入口与 16 字节签名见研究资料 `ui.object.create`；options 传 0 使用默认类。
-pub unsafe extern "C" fn obj_create(parent: Obj, options: u32) -> Obj {
-    let f: unsafe extern "C" fn(Obj, u32) -> Obj = transmute(0x1C02_8BB5usize);
-    f(parent, options)
-}
-
 /// `lv_obj_set_size(obj, w, h)` 已验证
-/// fw_addr: 0x004C8628  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
 pub unsafe extern "C" fn obj_set_size(obj: Obj, w: i32, h: i32) -> Obj {
     let f: unsafe extern "C" fn(Obj, i32, i32) -> Obj = transmute(0x0C58_8629usize);
     f(obj, w, h)
 }
 
-/// `lv_obj_set_scroll_dir(obj, dir)`，p67 / 3.101.043 静态核对。
-/// 壳 0x004C84C8 -> 0x1C02CBE9；镜像本体 0x0007A028 先分配 spec_attr，
-/// 再写其 +0x32 的 bits 6..9；相邻 getter 0x0007A0C0 读同一字段，默认 0xF。
-/// 方向位 LEFT=1、RIGHT=2、TOP=4、BOTTOM=8；3 只允许横向滚动。
-pub unsafe extern "C" fn obj_set_scroll_dir(obj: Obj, dir: u32) {
-    let f: unsafe extern "C" fn(Obj, u32) = transmute(super::fwaddr::OBJ_SET_SCROLL_DIR as usize);
-    f(obj, dir)
-}
-
-pub const LV_DIR_HOR: u32 = 0x3;
-pub const LV_OBJ_FLAG_CLICKABLE: u32 = 0x2;
-pub const LV_OBJ_FLAG_SCROLLABLE: u32 = 0x10;
-pub const LV_OBJ_FLAG_SCROLL_ELASTIC: u32 = 0x20;
-pub const LV_OBJ_FLAG_SCROLL_CHAIN: u32 = 0x300;
-pub const LV_OBJ_FLAG_GESTURE_BUBBLE: u32 = 0x8000;
-
-
-/// `lvx_confirm_btn_create(parent)` 系统闹钟页底部那个确认按钮的工厂
-///
-/// 依据: `FUN_0049885e` 建它之后 `set_size(0xa0, 0x60)`、
-/// `lvx_object_align(btn, 5, 0, -16)`、`btn_set_src(btn, "/resource/app/common/icon/confirm.bin")`、
-/// `obj_add_event(btn, 回调, 7, 0)`。工厂本体是
-/// `FUN_00988474`: `lv_obj_create(lvx 按钮类, parent)` 再清一个标志, 与 `zoom_picker_create`
-/// 同形状; 全镜像有二十多处调用它, 是通用控件不是闹钟私有。
-/// fw_addr: 0x00988474  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn confirm_btn_create(parent: Obj) -> Obj {
-    let f: unsafe extern "C" fn(Obj) -> Obj = transmute(0x0CA4_8475usize);
-    f(parent)
-}
-
-/// `btn_set_src(btn, path)` 把同一张图设进 0 / 0x20 / 0x80 三个状态
-///
-/// 依据: `FUN_009884EC` 反编译为对 `0x00A01258(obj, path, state)` 的三连调。
-/// fw_addr: 0x009884EC  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn btn_set_src(btn: Obj, path: Cp) {
-    let f: unsafe extern "C" fn(Obj, Cp) = transmute(0x0CA4_84EDusize);
-    f(btn, path)
-}
-
 /// `lvx_object_align(obj, align, x, y)` 在**父对象内**对齐 已验证
-/// fw_addr: 0x004C9188  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
 pub unsafe extern "C" fn obj_align(obj: Obj, align: u32, x: i32, y: i32) -> Obj {
     let f: unsafe extern "C" fn(Obj, u32, i32, i32) -> Obj = transmute(0x0C58_9189usize);
     f(obj, align, x, y)
@@ -80,63 +31,10 @@ pub unsafe extern "C" fn obj_align_to(obj: Obj, base: Obj, align: u32, x: i32, y
 }
 
 /// `lv_obj_set_hidden(obj, hidden)` 0=显示 1=隐藏 已验证
-///
-/// 入口是一段跳转壳（`ldr.w pc,[pc],#0` + 一格目标指针），目标在 PSRAM `0x1C028D38`。
-/// 壳自己的地址只能按"槽值 == 目标地址"反查得到 —— 照反编译里 `thunk_EXT_FUN_1c028d38`
-/// 的尾数写会写到隔壁的壳上（那一格装的是 `0x00278699`，另一个函数，一调就崩）。
-/// fw_addr: 0x004C8518  (文件偏移; VA = +0x0C0C0000, 指针 |=1)  fw_thunk: 0x1C028D39
-///
-/// 重要: 同一个入口的真身是 `lv_obj_clear_state`（取证在下面那条上），**它不隐藏任何东西**。
-/// 这一格的名字与实参语义都不可信，新代码一律用 `obj_clear_state`；真要隐藏对象请走
-/// `lv_obj_add_flag`（入口 `0x0C58_8961`，即现在的 `background_image_set_floating` 那个壳），
-/// 把 HIDDEN 位(1)当掩码用。这里保留 `obj_set_hidden` 是为了不改动已经上机的其它页调用点，
-/// 那几个调用点（页7/页8/页9 的行显隐）实际没有发生隐藏，是这条命名欠账的下游。
 pub unsafe extern "C" fn obj_set_hidden(obj: Obj, hidden: u32) -> Obj {
     let f: unsafe extern "C" fn(Obj, u32) -> Obj = transmute(0x0C58_8519usize);
     f(obj, hidden)
 }
-
-/// `lv_obj_clear_state(obj, state_mask)` —— 把对象上指定的状态位**清掉**。
-///
-/// 与 `obj_set_hidden` 是同一个入口（壳 `0x004C8518` → PSRAM `0x1C028D39`）。身份不是推的，
-/// 是照着它在 flash 里的那份影子源逐字读出来的（`0x00076178`）：
-/// ```text
-/// ldrh r3,[r0,#0x30]     ; 取 obj+0x30 那个 16 位状态字段
-/// tst  r1,r3             ; 传的掩码与现有状态有交集没有
-/// bic  r2,r3,r1          ; new = state & ~mask   <- 是"清位"，不是加位、更不是赋值
-/// bne/ bx lr             ; 没改动就直接返回
-/// bl   0x00075734        ; 有改动才写回并重算样式
-/// ```
-/// 三条旁证各指同一件事：调用点里有两处传 `0xF000`（四个用户状态位）和一处传另一个函数
-/// 现算出来的掩码（`0x00408242 mov r1,r0`）—— bool 的"隐藏"装不下这种实参；它这条壳在
-/// PSRAM 侧的邻居是 `add_flag`(0x1C028BD8) 与 `clear_flag`(0x1C028C85)，同一族里挨着状态位
-/// 那组函数；操作的对象偏移是 `+0x30` 状态而不是 `+0x2C` 标志。
-///
-/// 系统闹钟页在建完两轮之后对**第一个轮**发 `(轮, 2)`（`0x0048C328`，12 小时制分支
-/// `0x0048C524` 同一发）= 把时轮的 `FOCUSED` 清掉。它为什么要清：注册进控制器那张组
-/// （同一处 `vtable +0x34/+0x38`）会把第一个成员自动置焦，闹钟页不想要开局就有一个轮是焦的。
-/// 我们的页面没有那条注册链，开局本来就没有焦点，所以这一发照抄过来大概率是一发空操作；
-/// 抄它是为了让"建完滚轮之后状态一致"这条不留变量。
-///
-/// 状态位：`CHECKED=1` `FOCUSED=2` `FOCUS_KEY=4` `EDITED=8` `PRESSED=0x20`
-/// `PRESS_LOST=0x40` `DISABLED=0x80`，用户位 `0x1000..0x8000`。
-/// fw_addr: 0x004C8518  (文件偏移; VA = +0x0C0C0000, 指针 |=1)  fw_thunk: 0x1C028D39
-pub unsafe extern "C" fn obj_clear_state(obj: Obj, state: u32) -> Obj {
-    let f: unsafe extern "C" fn(Obj, u32) -> Obj = transmute(0x0C58_8519usize);
-    f(obj, state)
-}
-
-/// 滚轮"当前处于焦点态"的那个状态位（闹钟页就是清掉它，让开局没有轮是蓝的）。
-pub const LV_STATE_FOCUSED: u32 = 2;
-
-/// `lv_obj_t` 状态字在对象里的偏移(16 位宽)。
-///
-/// 出处不是猜的：上面那个清状态入口(`0x004C8518`)的 flash 影子源 `0x00076178` 头三条就是
-/// `ldrh r3,[r0,#0x30]` -> `tst r1,r3` -> `bic r2,r3,r1` —— 读的就是这一格、写的也是这一格。
-/// 用来"读控件自己此刻处于哪种状态"，比数事件码可靠：按下/松手由核心改写这一格。
-/// 具体某一位是什么含义不必在这里定(这份固件的状态位排布与常见版本不一致，
-/// 上面那串注释是已核对的取值)——页面用的是"与建屏那一刻的基线比有没有变"这种不认位的判法。
-pub const OBJ_STATE_OFF: u32 = 0x30;
 
 /// `lv_obj_add_event_cb(obj, cb, filter, user_data)` filter 用 `ev::*`（0=ALL） 已验证
 pub unsafe extern "C" fn obj_add_event(obj: Obj, cb: Cb, filter: u32, udata: u32) -> Obj {
@@ -156,16 +54,6 @@ pub unsafe extern "C" fn obj_delete(obj: Obj) {
 /// `lv_event_get_code(event)` 已验证
 pub unsafe extern "C" fn event_get_code(event: u32) -> u32 {
     let f: unsafe extern "C" fn(u32) -> u32 = transmute(0x0C58_8211usize);
-    f(event)
-}
-
-/// `lv_event_get_user_data(event)` 已验证
-///
-/// 依据: 闹钟页那个滚轮回调 `FUN_004985E4` 用 `0x004C8310` 的返回值 1/2/3 区分是
-/// 哪个轮被拨(宿主注册时把轮号当 user_data 传进去)。
-/// fw_addr: 0x004C8310  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn event_user_data(event: u32) -> u32 {
-    let f: unsafe extern "C" fn(u32) -> u32 = transmute(0x0C58_8311usize);
     f(event)
 }
 
@@ -223,68 +111,6 @@ pub unsafe extern "C" fn label_attr2(obj: Obj, v: u32) -> Obj {
 pub unsafe extern "C" fn style_apply(obj: Obj, style: u32, a: u32, b: u32) -> i32 {
     let f: unsafe extern "C" fn(Obj, u32, u32, u32) -> i32 = transmute(0x0C4B_F899usize);
     f(obj, style, a, b)
-}
-
-/// `lv_obj_set_width(obj, w)` 只设宽度，高度留给控件按样式自己算
-///
-/// 系统闹钟页对每个滚轮传 86。
-/// fw_addr: 0x004C8420  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn obj_set_width(obj: Obj, w: i32) -> Obj {
-    let f: unsafe extern "C" fn(Obj, i32) -> Obj = transmute(0x0C58_8421usize);
-    f(obj, w)
-}
-
-/// 从共享样式对象里读出字体（系统给冒号标签取 face 用的就是它）。读不到返回 0
-///
-/// 本体是 `lv_style_get_prop(样式, 0x5a, &out)` 的一层包装：属性 0x5a 就是字体，
-/// 取不到时它把 out 清 0 再返回，所以返回值可以判空。
-/// fw_addr: 0x003FF87C  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn style_get_font(style: u32) -> u32 {
-    let f: unsafe extern "C" fn(u32) -> u32 = transmute(0x0C4B_F87Dusize);
-    f(style)
-}
-
-/// `lv_obj_set_style_text_font(obj, face, sel)` 给单个对象写字体
-///
-/// 系统闹钟页写完冒号文本紧接着调它。
-/// fw_addr: 0x004C8E78  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn obj_set_style_text_font(obj: Obj, face: u32, sel: u32) -> Obj {
-    let f: unsafe extern "C" fn(Obj, u32, u32) -> Obj = transmute(0x0C58_8E79usize);
-    f(obj, face, sel)
-}
-
-/// 系统闹钟页给**每个滚轮**传 `(p, 2, 0)`、给 12 小时制那个 AM/PM 轮传 `(p, 0x14, 0)`
-///
-/// LVGL 本体在 PSRAM、没有符号表，具体是哪条样式属性查不到；只照抄字面值。
-/// fw_addr: 0x004C8248  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn obj_set_style_4c8248(obj: Obj, v: u32, sel: u32) -> Obj {
-    let f: unsafe extern "C" fn(Obj, u32, u32) -> Obj = transmute(0x0C58_8249usize);
-    f(obj, v, sel)
-}
-
-/// 系统闹钟页给那个 96x36 标签传 `(l, 2, 0)`，形状与 `obj_set_style_4c8248` 相同但本体不同
-/// fw_addr: 0x004C8830  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn obj_set_style_4c8830(obj: Obj, v: u32, sel: u32) -> Obj {
-    let f: unsafe extern "C" fn(Obj, u32, u32) -> Obj = transmute(0x0C58_8831usize);
-    f(obj, v, sel)
-}
-
-/// 挂完样式/字体之后，系统一律再对同一对象传一次 `(obj, 0xff, 0)`
-///
-/// `style_apply` 自己最后一步也是它，冒号标签设完字体后也调它。
-/// fw_addr: 0x004C8DA0  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn obj_set_style_4c8da0(obj: Obj, v: u32, sel: u32) -> Obj {
-    let f: unsafe extern "C" fn(Obj, u32, u32) -> Obj = transmute(0x0C58_8DA1usize);
-    f(obj, v, sel)
-}
-
-/// 给标签挂上系统默认的两枚样式（系统建那个 96x36 标签时紧接着调它，传 0）
-///
-/// 本体是两对 `0x004C7EF8`/`0x004C89F0`（成对的移除 + 挂入），样式对象取自 SRAM。
-/// fw_addr: 0x003FFFFC  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn label_apply_defaults(obj: Obj, sel: u32) {
-    let f: unsafe extern "C" fn(Obj, u32) = transmute(0x0C4B_FFFDusize);
-    f(obj, sel)
 }
 
 // ===========================================================================
@@ -474,72 +300,26 @@ pub unsafe extern "C" fn fw_style_get_prop(obj: u32, sel: u32, prop: u32) -> u32
     f(obj, sel, prop)
 }
 
-/// `lv_obj_set_local_style_prop(obj, prop, value, selector)`，四参、无返回值。
-/// p67 / 3.101.043 静态核对：固件调用点 0x009E6600 -> thunk 0x00A00BB0
-/// -> 0x002BD925。镜像本体在文件 0x00047790，由启动代码 0x00000A60
-/// 从 0x2C0FC6CC..0x2C10D438 搬到 0x200B2860，函数落在 0x200BD924，
-/// 使用对应 SRAM 执行地址 0x002BD924；不能将副本直接换算成 0x0C107790。
-/// 本体 R1=prop、R2=4 字节 value、R3=selector；尾部调用 refresh_style。
-/// 属性标志表 0x2CCE5BC4[0x5A]=0x05，字体写入会传播，不需另补刷新。
-/// 缺少 local style 时会分配 12B 样式及条目数组，由对象销毁回收。
-/// 验证脚本 tools/verify_keyboard_abi.py；静态核对不等于真机运行通过。
-pub unsafe extern "C" fn obj_set_local_style_prop(obj: u32, prop: u32, val: u32, sel: u32) {
-    let f: unsafe extern "C" fn(u32, u32, u32, u32) =
-        transmute(super::fwaddr::OBJ_SET_LOCAL_STYLE_PROP as usize);
+/// `0x0C107790(obj, prop, value, selector)` LVGL v9 对象级 local style 写入,
+/// 即固件里的 `lv_obj_set_local_style_prop`(R1=prop R2=值 R3=selector)。
+/// 用途: 样式对象/记录/缓存三条路都改不到行文字 => 对**活对象**直写 text_font。
+/// 重要(字节级): 该入口尾部 0x0c107892 会调 `lv_obj_refresh_style`
+/// (0x0C1070AC) 做整棵子树失效重绘, 传播与否由属性标志表 0x2CCE5BC4[prop] 决定;
+/// text_font(0x5A) 实测该表值 0x05 = 带传播位 => **写完不需要再补任何重绘调用**。
+/// 另: 对象本来没有 local style 时它会自行分配 12B(0x0c1078ce 起), 由 obj_delete 回收。
+/// 静态核对
+pub unsafe extern "C" fn obj_set_local_style_prop(obj: u32, prop: u32, val: u32, sel: u32) -> u32 {
+    let f: unsafe extern "C" fn(u32, u32, u32, u32) -> u32 = transmute(0x0C10_7791usize);
     f(obj, prop, val, sel)
-}
-
-/// `0x0C13C690(root, cb, ud)` LVGL v9 的对象树遍历；`root = 0` 时遍历全部已注册 screen。
-/// 回调签名 `u32 (u32 obj, u32 ud)`，返回非 0 停止遍历。
-/// 依据: 地址表 043.lv_obj_tree_walk（静态核对，壳与槽值反查成立）。
-pub unsafe extern "C" fn lv_obj_tree_walk(root: u32, cb: u32, ud: u32) -> u32 {
-    let f: unsafe extern "C" fn(u32, u32, u32) -> u32 = transmute(0x0C13_C691usize);
-    f(root, cb, ud)
-}
-
-/// `lv_obj_invalidate(obj)` —— 只让这一个对象重画：不发样式事件，也不往子树传播。
-/// `lv_obj_refresh_style`(0x0C1070AC) 体内第一件事就是调它，所以"改完属性要重画"这一发
-/// 用它而不是 refresh_style，代价小得多。
-/// 形态: VA `0x0C10CBB4`（file 0x0004CBB4）处是 `ldr.w pc,[pc],#0` 的跳转壳，壳里的槽值
-/// `0x1C02B305` 是运行期落在 PSRAM 侧的真身（同一支壳另有两处引用：`0x0C587AB8`、`0x0CAC1028`）。
-/// 等级 静态核对 —— 壳与槽值反查成立，"单独调它屏幕是否真重画"未实测。
-/// fw_addr: 0x0004CBB4  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-/// fw_thunk: 0x1C02B305
-pub unsafe extern "C" fn obj_invalidate(obj: u32) {
-    let f: unsafe extern "C" fn(u32) -> u32 = transmute(0x0C10_CBB5usize);
-    f(obj);
-}
-
-/// `lvx_image_set_scale(obj, scale_x, scale_y)` —— 固件自己的图片缩放入口（256 = 一倍）。
-///
-/// **直接写 `lv_image_t+0x50/+0x54` 不会改变绘制**：实测把这两个字段写成 128（半尺寸），
-/// 屏幕上图标仍是 100px 原样。原因在函数体内：它读完 `+0x50/+0x54`（都是 `ldrh`，u16）
-/// 还要连 `+0x44/+0x48/+0x4c/+0x58/+0x5c` 一起交给 `0x0C07_FDC8` 重算派生几何 ——
-/// 少了这一发，光改字段只是改了缓存值，绘制用的还是旧几何。
-/// fw_addr: 0x000B9DB0  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn image_set_scale(obj: u32, sx: i32, sy: i32) {
-    let f: unsafe extern "C" fn(u32, i32, i32) = transmute(0x0C17_9DB1usize);
-    f(obj, sx, sy);
 }
 
 /// `LV_STYLE_TEXT_FONT` 属性号。依据(字节级): 固件自己的
 /// `style_get_text_font`(0x0C4BF87C) 逐字为
 /// `movs r1,#0x5A; bl 0x0C588BB8(style, 0x5A, &out)` —— 即读 text_font 用的就是 0x5A;
 /// `row_init` 也以 `movs r2,#0x5A` 调 getter 取行字体。
-/// 属性号和调用入口必须分别核对；属性号正确不能证明镜像副本地址可执行。
+/// 注意: "local style 写入即崩"的成因是**属性号靠猜**, 不是本入口的问题;
+/// 本常量是固件自己用过的号, 属实证。
 pub const LV_STYLE_TEXT_FONT: u32 = 0x5A;
-
-/// 清除绝对坐标布局的主题内边距和边框，不移除字体、颜色与圆角。
-/// p67 镜像：0x000756C0 以属性 0x10 / 0x12 计算子对象 y / x 原点；
-/// 0x0007A164 以 0x10 / 0x11、0x30(border_width)计算上下可滚动边界。
-/// 左右对称分支 0x00079D7C 使用 0x12 / 0x13。
-/// 官方 setter 本体 0x48258/0x48270/0x48288/0x482A0/0x484A0 使用同一组属性，
-/// 最终调用 SRAM 中的 local style setter；本封装也必须走正式 thunk。详见 docs/KEYBOARD.md。
-pub unsafe fn obj_clear_box_spacing(obj: Obj) {
-    for prop in [0x10, 0x11, 0x12, 0x13, 0x30] {
-        obj_set_local_style_prop(obj, prop, 0, 0);
-    }
-}
 
 /// `0x0C588BB8(style, prop, &out)` lv_style_t **结构体**属性读取(只读)。
 /// 依据(字节级): 固件 style_get_text_font(0x0C4BF87C, 全固件 1265 处调用)体内就是
@@ -591,105 +371,4 @@ pub unsafe fn obj_is_child_of(parent: Obj, obj: Obj) -> bool {
         i += 1;
     }
     false
-}
-
-/// `lv_arc_create` 0x1C0641D0(Thumb 0x1C0641D1): 类描述 0x2CCE5F0C, 内部
-/// `lv_obj_class_create_obj` + `lv_obj_class_init_obj`。反汇编自 LVGL 代码段 dump。
-pub unsafe extern "C" fn arc_create(parent: Obj) -> Obj {
-    let f: unsafe extern "C" fn(Obj) -> Obj = transmute(0x1C06_41D1usize);
-    f(parent)
-}
-
-/// 写 arc 的 value 字段(+0x2E，i16，0..100)并失效重绘。
-/// LVGL 8.4.0 `lv_arc_t`：obj 24B；+0x24 rotation、+0x26 indic_start、+0x28 indic_end、
-/// +0x2A bg_start、+0x2C bg_end、+0x2E value、+0x30 min、+0x32 max（角度 u16，值 i16）。
-unsafe fn arc_invalidate(arc: Obj) {
-    let f: unsafe extern "C" fn(Obj) = core::mem::transmute(0x1C02_B305usize);
-    f(arc);
-}
-
-/// 写 arc 的 MAIN（背景）弧起止角并失效重绘。
-/// 字段依据 analysis/arc-disasm.zh.md §4.1：draw 的 MAIN 分支只读 +0x40/+0x44(f32)，
-/// rotation 在 +0x34(i32)，两条角都会被加上 rotation，所以这里顺带清零。
-unsafe fn arc_set_main_angles(arc: Obj, start: f32, end: f32) {
-    if arc == 0 { return; }
-    let a = arc as usize;
-    core::ptr::write_volatile((a + 0x34) as *mut i32, 0);
-    core::ptr::write_volatile((a + 0x40) as *mut f32, start);
-    core::ptr::write_volatile((a + 0x44) as *mut f32, end);
-    arc_invalidate(arc);
-}
-
-/// 写 arc 的 INDICATOR 弧起止角并失效重绘。
-/// 依据 analysis/arc-disasm.zh.md §4.1：draw 的 INDICATOR 分支只读 +0x38/+0x3C(f32)。
-/// INDICATOR 走主题主色（蓝 #2196F3），是唯一不需要写样式就能拿到非灰色弧的部件。
-unsafe fn arc_set_indic_angles(arc: Obj, start: f32, end: f32) {
-    if arc == 0 { return; }
-    let a = arc as usize;
-    core::ptr::write_volatile((a + 0x34) as *mut i32, 0);
-    core::ptr::write_volatile((a + 0x38) as *mut f32, start);
-    core::ptr::write_volatile((a + 0x3C) as *mut f32, end);
-    arc_invalidate(arc);
-}
-
-/// 清掉 MAIN 弧（start == end == 0 时渲染器直接返回）。
-pub unsafe fn arc_clear_main(arc: Obj) {
-    arc_set_main_angles(arc, 0.0, 0.0);
-}
-
-/// 清掉 INDICATOR 弧（构造函数默认 135..270，会让“25% 看起来像半环”）。
-pub unsafe fn arc_clear_indicator(arc: Obj) {
-    arc_set_indic_angles(arc, 0.0, 0.0);
-}
-
-/// 进度环：INDICATOR 弧从正底部(90°)起画 pct%，MAIN 清空。
-/// INDICATOR 默认蓝、默认宽，不需要写样式；pct=100 时 450 = 90+360 命中整圈特例。
-pub unsafe fn arc_set_progress(arc: Obj, pct: u32) {
-    let p = if pct > 100 { 100 } else { pct };
-    arc_clear_main(arc);
-    arc_set_indic_angles(arc, 90.0, 90.0 + p as f32 * 3.6);
-}
-
-/// 只把 MAIN 弧做成整圆（作底环/track 用），并清掉 INDICATOR。
-/// MAIN 走主题默认灰 #2F3237，同样不需要写样式。
-pub unsafe fn arc_set_bg_full(arc: Obj) {
-    arc_set_indic_angles(arc, 0.0, 0.0);
-    arc_set_main_angles(arc, 0.0, 360.0);
-}
-
-/// 整圆、从正底部开始：MAIN = 90..450（整圈），INDICATOR 清空。
-pub unsafe fn arc_make_full(arc: Obj) {
-    arc_set_indic_angles(arc, 0.0, 0.0);
-    arc_set_main_angles(arc, 90.0, 450.0);
-}
-
-/// 兼容旧调用：按百分比画 MAIN 进度弧。
-pub unsafe fn arc_set_pct(arc: Obj, pct: u32) {
-    arc_set_progress(arc, pct);
-}
-
-/// 关掉 arc 的触摸交互：清 obj flags(+0x1C) 的 CLICKABLE(bit1)。
-/// 否则 LVGL 的 arc 会把手势变成数值拖拽（用户能直接把环拖大拖小）。
-pub unsafe fn arc_disable_input(arc: Obj) {
-    obj_clear_flag(arc, 0x2);
-}
-
-/// 清掉对象 flags(+0x1C) 的 SCROLLABLE(bit4)，禁止该容器左右/上下滑动。
-/// 主页圆环行比屏宽时，父容器会把手势当横向滚动，用户一划整行就跟着动。
-pub unsafe fn obj_clear_scrollable(obj: Obj) {
-    obj_clear_flag(obj, 0x10);
-}
-
-/// 调固件 lv_obj_clear_flag(obj, f) 0x1C028C85，不再手写 flags 偏移。
-pub unsafe fn obj_clear_flag(obj: Obj, f: u32) {
-    if obj == 0 { return; }
-    let func: unsafe extern "C" fn(Obj, u32) = transmute(0x1C02_8C85usize);
-    func(obj, f);
-}
-
-/// 调固件 lv_obj_add_flag(obj, f) 0x1C028BD8。
-pub unsafe fn obj_add_flag(obj: Obj, f: u32) {
-    if obj == 0 { return; }
-    let func: unsafe extern "C" fn(Obj, u32) = transmute(0x1C02_8BD9usize);
-    func(obj, f);
 }

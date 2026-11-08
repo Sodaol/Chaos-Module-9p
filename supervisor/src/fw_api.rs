@@ -17,8 +17,6 @@
 //! ## 使用纪律（务必遵守）
 //!
 //! - **新界面一律走本层**，不要再在业务代码里写 `transmute(0x0C...)`。
-//! - 本层里的固件入口地址也不写死字面量，一律从 `fwaddr::` 取 —— 同一支 API 在不同
-//!   机型上是两个地址，只有集中一份才能按目标切换。
 //! - 本文件任何地址改动，都要重新对固件做核对，并在注释里写清来源与验证程度。
 //! - 注释里标注验证程度，由强到弱：`已验证` > `实测` > `静态核对` > `推断待验`。
 //! - 调用前先确认上下文（哪个线程 / 是否在事件派发中 / 是否需要 UI 线程）。
@@ -54,8 +52,17 @@ pub const MAX_PAGE_ID: usize = 9;
 /// （根因示例：槽位扩到 12 而销毁仍清 0..9 → 悬空句柄 → use-after-free）。
 pub const MAX_ROWS_PER_PAGE: usize = crate::state::MAX_ROWS_PER_PAGE;
 
-/// 原生对象对齐参数；单独成模块，使主机回归测试使用同一份实际常量。
-pub mod align;
+/// 对齐枚举（LVGL v9 `lv_align_t` 的取值，与固件自带界面用的常量同值）
+pub mod align {
+    pub const DEFAULT: u32 = 0;
+    pub const TOP_LEFT: u32 = 1;
+    pub const TOP_MID: u32 = 2;
+    pub const TOP_RIGHT: u32 = 3;
+    pub const OUT_BOTTOM_LEFT: u32 = 13;
+    /// 放在基准下方并水平居中 行/文本纵向串链用的就是这个
+    pub const OUT_BOTTOM_MID: u32 = 14;
+    pub const OUT_BOTTOM_RIGHT: u32 = 15;
+}
 
 /// 事件码（与固件自带界面的 `EVENT_*` 常量同值）
 pub mod ev {
@@ -163,21 +170,11 @@ pub mod eventbus_event {
 mod event;
 mod fs;
 mod gfx;
-mod glass;
-mod home;
 mod page;
-mod picker;
 mod sys;
-
-/// 按目标选择的固件地址表。业务代码里的固件入口地址一律从这里取,
-/// 不再各自写死 `transmute(0x0C..)` 的字面量。
-pub mod fwaddr;
 
 pub use event::*;
 pub use fs::*;
 pub use gfx::*;
-pub use glass::*;
-pub use home::*;
 pub use page::*;
-pub use picker::*;
 pub use sys::*;

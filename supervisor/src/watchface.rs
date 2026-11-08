@@ -82,34 +82,6 @@ pub(crate) unsafe fn desel_set(node: u32, off: bool) {
         n -= 1;
     }
     st_wr!(WF_DESEL_CNT, n as u32);
-    persist_deselected();
-}
-
-const SHAKE_WF_CFG: &[u8] = b"/data/chaos/shake-wfaces.cfg\0";
-
-unsafe fn persist_deselected() {
-    let fd = fw_api::open(SHAKE_WF_CFG.as_ptr(), fw_api::oflag::WRONLY | fw_api::oflag::CREAT, 0o640);
-    if fd < 0 { return; }
-    let mut buf = [0u8; 24 * 16];
-    for i in 0..st_rd!(WF_DESEL_CNT).min(24) as usize {
-        let node = st_rd!(WF_DESEL[i]);
-        let id = (node + 8) as *const u8;
-        for j in 0..15 { buf[i * 16 + j] = read_volatile(id.add(j)); if buf[i * 16 + j] == 0 { break; } }
-    }
-    let _ = fw_api::write(fd, buf.as_ptr(), buf.len() as u32); fw_api::close(fd);
-}
-
-unsafe fn restore_deselected() {
-    let fd = fw_api::open(SHAKE_WF_CFG.as_ptr(), fw_api::oflag::RDONLY, 0);
-    if fd < 0 { return; }
-    let mut buf = [0u8; 24 * 16];
-    let got = fw_api::read(fd, buf.as_mut_ptr(), buf.len() as u32); fw_api::close(fd);
-    if got != buf.len() as i32 { return; }
-    let nodes = core::ptr::addr_of!(WF_NODES) as *const u32;
-    for i in 0..st_rd!(WF_COUNT).min(24) as usize {
-        let node = read_volatile(nodes.add(i)); let id = (node + 8) as *const u8;
-        for j in 0..24 { if buf[j * 16] == 0 { continue; } let mut same = true; for k in 0..15 { if read_volatile(id.add(k)) != buf[j * 16 + k] { same = false; break; } if buf[j * 16 + k] == 0 { break; } } if same { desel_set(node, true); break; } }
-    }
 }
 
 // show_builtin: 本页列表是否包含内置表盘(type 0) 两页各自的开关独立控制
@@ -187,8 +159,6 @@ pub(crate) unsafe fn load_watchfaces(show_builtin: u32) {
     }
     st_wr!(WF_TOTAL, total as u32);
     st_wr!(WF_COUNT, cnt as u32);
-    // 节点地址每次启动都会变化，按持久化的表盘 ID 恢复摇一摇参与列表。
-    restore_deselected();
 }
 
 // 表盘页行文本: 行0="显示内置表盘"开关, 行1-8=窗内条目(主标签=名称, 副标签=ID), 行9="更多", 行10="返回"
@@ -310,10 +280,18 @@ pub(crate) unsafe fn wf_apply_selection(pid: usize) {
 // eventbus 回调跑在派发线程: 只置旗标/计数, 重活全部交给 lv_timer(UI 线程) —— 不在派发线程上动对象树
 #[no_mangle]
 pub(crate) unsafe extern "C" fn chaos_shake_cb(event: u32, _udata: u32) -> u32 {
+    #[cfg(feature="n67")]
+    {crate::shake_probe::receive(event)}
+    #[cfg(not(feature="n67"))]
+    {
     if event == 0 { return 0; }
+    #[cfg(feature="n67")]
+    if !safe_ptr(event)||!safe_ptr(event+0x1c)||rd32((event+4) as *const u32)!=fw_api::TOPIC_QUICK_GUESTURE||rd32((event+0x1c) as *const u32)<10{return 0;}
     // 手势码 = payload+8 u16 (event[+0x18]=payload 指针, 与固件自带 system handler 的读法一致)
     let pay = rd32((event + 0x18) as *const u32);
     if pay == 0 || (pay & 0xE000_0000) != 0x2000_0000 { return 0; }
+    #[cfg(feature="n67")]
+    if !safe_ptr(pay)||!safe_ptr(pay+8){return 0;}
     let code = rd16((pay + 8) as *const u16) as u32;
     if code != GC_SHAKE {
         // 抬腕亮屏(0x1C3)与其它码: 直接丢弃 不置旗标, 不切表盘, 不上冷却
@@ -326,8 +304,10 @@ pub(crate) unsafe extern "C" fn chaos_shake_cb(event: u32, _udata: u32) -> u32 {
     //   3. 固件的"表盘在显示"标志非 0 —— 挡住 launcher(实测: 表盘页 on=1, launcher on=0)
     if !fw_api::screen_is_on() || fw_api::top_app_id() != fw_api::HOME_APP_ID { return 0; }
     if fw_api::watchface_is_on() == 0 { return 0; }
+    if st_rd!(SHAKE_COOL)!=0{return 0;}
     st_wr!(SHAKE_PENDING, 1);
     0
+    }
 }
 
 // lv_timer(UI线程): 框架级维护 + 页面 tick 分发
@@ -341,11 +321,6 @@ pub(crate) unsafe extern "C" fn chaos_shake_cb(event: u32, _udata: u32) -> u32 {
 //   都算有活, 所以**所有以"拍"为单位的等待量都还在按 50ms 走, 不会因为降频被拉长**。
 const TICK_FAST_MS: u32 = 50;
 const TICK_IDLE_MS: u32 = 1000;
-// 曾经有过一档"桌面滚动时把节拍提到 16ms"。两次复测都更糟：写入频率高 3 倍，
-// 屏上反而连"缩"都看不到（拖拽帧全 100）—— 列表每帧重排会把倍率重置，绘制紧跟着重排，
-// 外部写多快都插不进去。现在滚动中干脆不写（见 desktop_scale::fast_cb），停下后缓入。
-// 注入后先让友商/系统模块完成启动；50 个 50ms tick 后才运行 Chaos 逻辑。
-static mut BOOT_DELAY: u32 = 50;
 
 /// 有没有活在推进(或有人在用)。为 true 就保持快节拍。
 unsafe fn tick_busy() -> bool {
@@ -358,26 +333,12 @@ unsafe fn tick_busy() -> bool {
     || res_hook::pending()
     || font_list::pending()
     || confirm_pop::pending()
-    || crate::background_home::pending()
-    || crate::beautify_restore::pending()
 }
 
 /// 按忙闲改本定时器的周期(只在句柄验过之后才动; 变了才写, 不每拍写)。
 unsafe fn tick_adapt() {
-    if st_rd!(TICK_ADAPT) == 0 {
-        // 句柄形状没验上 => 一辈子 50ms，滚动提速也不会生效。报一次，
-        // 免得真机把"根本没提速"看成"提速了但观感没变"。
-        if crate::desktop_scale::scrolling() && st_rd!(TICK_ADAPT_WARN) == 0 {
-            st_wr!(TICK_ADAPT_WARN, 1);
-            crate::log::line("tick noadapt");
-        }
-        return;
-    }
-    let want = if tick_busy() {
-        TICK_FAST_MS
-    } else {
-        TICK_IDLE_MS
-    };
+    if st_rd!(TICK_ADAPT) == 0 { return; }
+    let want = if tick_busy() { TICK_FAST_MS } else { TICK_IDLE_MS };
     if want == st_rd!(TICK_PERIOD_MS) { return; }
     let t = st_rd!(SHAKE_TIMER);
     fw_api::timer_set_period(t, want);
@@ -394,20 +355,25 @@ unsafe fn tick_adapt() {
 
 #[no_mangle]
 pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
-    if st_rd!(BOOT_DELAY) != 0 {
-        st_wr!(BOOT_DELAY, st_rd!(BOOT_DELAY) - 1);
-        return;
-    }
-    // 开机补偿: 免重启模式下, 把 Chaos 隐藏名单里的应用重新置位/摘图标。
-    // 必须在 UI 线程(timer)里做: app_launcher_del 会碰 LVGL 对象, 不能在 insmod 线程调。
-    crate::appmgr::boot_apply();
-    // 运行期看门狗: 换绑新手机/手机重发应用清单会触发固件重注册应用,
-    // 普通隐藏的隐藏位会被新节点重置, 这里持续补回(见 appmgr::watch_keep 注释)。
-    crate::appmgr::watch_keep();
-    // 延时窗口结束后才订阅手势；此前不触碰事件总线。
-    if st_rd!(SHAKE_SUB) == 0 {
-        shake_arm();
-    }
+    #[cfg(feature="n67")] crate::gh225::tick();
+    #[cfg(feature="n67")] crate::shake_probe::tick();
+    #[cfg(feature="n67")]
+    crate::files::chaos_files_poll();
+    fw_api::header_tick();
+        #[cfg(feature="n67")]
+        crate::app_manager::maintenance();
+    #[cfg(feature="n67")]
+    crate::native_entries::tick();
+    #[cfg(feature="n67")]
+    crate::launcher_entry::tick();
+    #[cfg(feature="n67")]
+    crate::background::tick();
+    #[cfg(feature="n67")]
+    crate::delivery_compat::tick();
+    #[cfg(feature="n67")]
+    crate::swipe_vibration::tick();
+    #[cfg(feature="n67")]
+    crate::diagnostics::tick();
     // 0. 先按上一拍的忙闲把节拍定好(放在最前: 后面的分支里有提前 return)
     tick_adapt();
     // 1. 自愈: 页句柄还在但内容树没建(built == 0, 而 on_resume 没来, 例如息屏唤醒)。
@@ -436,8 +402,6 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
             }
         }
     }
-    // 2.5 桌面图标缩放(与页面无关: 固件 launcher 桌面不是我们的页, 前台页 tick 不会跑到)
-    crate::desktop_scale::tick();
     // 3. 消费重建请求(lv_timer 上下文销毁/重建对象树是安全的)
     let rq = st_rd!(RENDER_REQ);
     if rq != RENDER_NONE {
@@ -448,10 +412,7 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
     //    放定时器而不是页面渲染路径, 是因为**目标页不是我们的页** —— 系统页
     //    没有任何我们能挂的渲染钩子(生命周期槽位只属于我们注册的页, eventbus 也
     //    没有"页面切换"主题)。
-    crate::settings_entry::tick();
-    crate::system_update_entry::tick();
-    crate::launcher_entry::tick();
-    crate::system_version::tick();
+    #[cfg(feature="n67")]
     crate::beautify_restore::tick();
     font_apply::tick();
     // wrapper 原地热替换(融合 Corona 的核心一招): 20 拍一轮 + quiet 门,
@@ -464,8 +425,12 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
     // 字体清单页(更换字体)的删除流水线 + 提示超时。与上面几项跑批同一个位置:
     // 快节拍 50ms 一拍, 息屏空闲时降到 1000ms(页面不在前台时 render_req 也只是置位, 由存活门挡住)。
     font_list::tick();
-    // 背景沿用本调度，截图与有限跑批先过亮屏及字体安静门。
-    crate::background_home::tick();
+    #[cfg(feature="n67")]
+    crate::system_custom::tick();
+    #[cfg(feature="n67")]
+    crate::desktop_scale::tick();
+    #[cfg(feature="n67")]
+    crate::notifications::tick();
     // 5. 摇一摇: 冷却 + 消费旗标 + 切表盘
     let cool = st_rd!(SHAKE_COOL);
     if cool > 0 {
@@ -475,17 +440,19 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
     if st_rd!(SHAKE_PENDING) == 0 { return; }
     st_wr!(SHAKE_PENDING, 0);
     if st_rd!(SHAKE_EN) == 0 { return; }
+    #[cfg(feature="n67")]
+    if !fw_api::screen_is_on()||fw_api::top_app_id()!=fw_api::HOME_APP_ID||fw_api::watchface_is_on()==0{return;}
     // 保住表盘页窗位: load_watchfaces() 会把 WF_WIN 重置为 0; 若当时正停在
     // 表盘页的"更多"屏, 行下标会与窗位错位(点错表盘) → 先存后还原
     let win_save = st_rd!(WF_WIN);
     // 若正停在列表页则不改动其列表(否则会与该页的过滤不一致); 否则用全量(含内置)以便定位当前面
     let fg_now = st_rd!(FG_PAGE);
-    if fg_now != 8 && fg_now != 9 {
+    if (cfg!(feature="n67")&&st_rd!(APP_FG)==0)||(fg_now != 8 && fg_now != 9) {
         load_watchfaces(1);
     }
     st_wr!(WF_WIN, win_save);
     let cnt = st_rd!(WF_COUNT) as usize;
-    if cnt < 2 { return; }
+    if cnt < 2 {#[cfg(feature="n67")] crate::shake_probe::reason(10);return;}
     let c0 = st_rd!(WF_CUR0);
     let nds = core::ptr::addr_of!(WF_NODES) as *const u32;
     let mut cur = 0usize;
@@ -506,10 +473,11 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
         let j = (cur + k) % cnt;
         let nd = read_volatile(nds.add(j));
         let ty = read_volatile(tps2.add(j));
-        if (ty != 0 || builtin_on) && !desel_has(nd) { nx = j; ok = true; break; }
+        if nd!=c0 && (ty != 0 || builtin_on) && !desel_has(nd) { nx = j; ok = true; break; }
         k += 1;
     }
     if !ok {
+        #[cfg(feature="n67")] crate::shake_probe::reason(10);
         st_wr!(SHAKE_COOL, 20);
         return;
     }
@@ -522,6 +490,7 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
         let rfc = rf(1, node);
         st_wr!(WF_RF_RC, rfc);
     }
+    #[cfg(feature="n67")] crate::shake_probe::reason(if rc==0&&st_rd!(WF_RF_RC)==0{9}else{11});
     // 若此刻正停在表盘页(8)或轮换页(9), 原地刷新勾选(不重建整页)
     let fg = st_rd!(FG_PAGE) as usize;
     if fg == 8 || fg == 9 {
@@ -539,31 +508,11 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
 // 每清零重建一次就多一个并发实例(表现为 CPU 数值刷新越来越快, 经历的息屏轮次越多越快)。
 // 要做"先删后建"必须先确认 lv_timer_delete 的地址, 在那之前只建一次。
 pub(crate) unsafe fn shake_arm() {
-    if st_rd!(BOOT_DELAY) != 0 { return; }
-    // 开关在重启后从持久化文件恢复；文件缺失时保持默认关闭(SHAKE_EN 初值 0)。
-    let path = b"/data/chaos/shake.cfg\0";
-    let fd = fw_api::open(path.as_ptr(), fw_api::oflag::RDONLY, 0);
-    if fd >= 0 {
-        let mut v = 1u8;
-        if fw_api::read(fd, &mut v as *mut u8, 1) == 1 { st_wr!(SHAKE_EN, if v == 0 { 0 } else { 1 }); }
-        fw_api::close(fd);
-    }
     if st_rd!(SHAKE_SUB) == 0 {
         let cb: unsafe extern "C" fn(u32, u32) -> u32 = chaos_shake_cb;
         let h = fw_api::eventbus_subscribe(fw_api::TOPIC_QUICK_GUESTURE, 0, cb as u32, 0);
         st_wr!(SHAKE_SUB, h);
     }
-    maintenance_arm();
-}
-
-pub(crate) unsafe fn persist_shake_enabled(value: u32) {
-    let path = b"/data/chaos/shake.cfg\0";
-    let fd = fw_api::open(path.as_ptr(), fw_api::oflag::WRONLY | fw_api::oflag::CREAT, 0o640);
-    if fd >= 0 { let v = if value == 0 { 0u8 } else { 1u8 }; let _ = fw_api::write(fd, &v as *const u8, 1); fw_api::close(fd); }
-}
-
-/// UI 线程启动维护队列，后台注入与页面共用一个定时器。
-pub(crate) unsafe fn maintenance_arm() {
     if st_rd!(SHAKE_TIMER) == 0 {
         let tm: unsafe extern "C" fn(u32) = chaos_shake_timer;
         let t = fw_api::timer_create(tm as u32, TICK_FAST_MS, 0);
@@ -584,3 +533,4 @@ pub(crate) unsafe fn shake_toggle_text(dp: *mut u8) {
     x.s("摇一摇".as_bytes());
     x.end();
 }
+

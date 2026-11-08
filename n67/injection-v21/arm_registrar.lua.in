@@ -1,0 +1,29 @@
+local function arm_registrar()
+
+  BRIDGE=native(MALLOC,128);own(BRIDGE,128)
+
+  local code=string.pack('<I4I4I4I4',0x4B024901,0xBF004718,BRIDGE,fn(OFF_TIMER_BOOTSTRAP))
+
+  local blob=string.pack('<I4I4I4I4I4I4I4I4',0x544D425A,0x0C25A289,fn(OFF_REGTICK),600,BLOCK+0xF0,0,0,0)
+
+    ..code..string.rep('\0',80)
+
+  copy_fast(BRIDGE,blob)
+
+  sync_code(BRIDGE+32,16)
+
+  REG_TIMER=lvgl.Timer{period=100,repeat_count=-1,paused=true,cb=function(t) t:pause() end}
+
+  local ud=tonumber(tostring(REG_TIMER):match('0x(%x+)$'),16);assert(heap(ud,4),'timer userdata')
+
+  local tp=word(read(ud,4),0);assert(heap(tp,24),'timer pointer')
+
+  local raw=read(tp,24)
+
+  assert(word(raw,0)==100 and word(raw,16)==0xFFFFFFFF and heap(word(raw,12),8),'timer ABI')
+
+  local cb=word(raw,8);assert(cb>=0x0C080001 and cb<0x0C7EA290 and cb%2==1,'timer callback ABI')
+
+  own(tp+8,4);write32(tp+8,(BRIDGE+32-0x20000000)|1);REG_TIMER:ready();REG_TIMER:resume()
+
+end

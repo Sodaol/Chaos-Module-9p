@@ -20,10 +20,19 @@ pub const FW_INIT_BUFFER: u32 = 0x0C51_3A45;       // app_launcher_add(app_id) (
 pub const FW_NOTIFY: u32 = 0x0CA9_A899;            // lvx_notification_insert_message(notif*) 固件完整链(拷贝/登记由它内部自处理; 自己手写那条手动链里的段B memset 实测必崩)
 
 // VFS (symbols: nuttx)
+#[cfg(feature = "n67")]
+pub const FW_FILE_OPEN: u32 = 0x0C37E30D;
+#[cfg(not(feature = "n67"))]
 pub const FW_FILE_OPEN: u32 = 0x0C1D_0A29;   // open(path, flags, mode) -> fd
 
+#[cfg(feature = "n67")]
+pub const FW_FILE_CLOSE: u32 = 0x0C37DBA5;
+#[cfg(not(feature = "n67"))]
 pub const FW_FILE_CLOSE: u32 = 0x0C1B_9D81;  // close(fd) -> 0
 
+#[cfg(feature = "n67")]
+pub const FW_FILE_READ: u32 = 0x0C37F459;
+#[cfg(not(feature = "n67"))]
 pub const FW_FILE_READ: u32 = 0x0C1D_129D;   // read(fd, buf, len) (036 版本核对到的是 0x0C1C1E25)
 
 pub const MAX_ROWS_PER_PAGE: usize = 12;
@@ -31,9 +40,6 @@ pub const MAX_ROWS_PER_PAGE: usize = 12;
 // 信息页三行实时数值(存储/内存/CPU), 每格 STAT_STRIDE 字节
 pub const STAT_STRIDE: usize = 32;
 pub static mut STAT_VAL: [[u8; STAT_STRIDE]; 3] = [[0; STAT_STRIDE]; 3];
-/// 存储/内存占用百分比(0..100)。tick 刷的时候顺手存下, render 建数据行时直接用 ——
-/// 进页面不再为"建个进度条"去读两遍 procfs(见 InfoPage::render 的注释)。
-pub static mut STAT_PCT: [u32; 2] = [0; 2];
 pub static mut STAT_TICK: u32 = 0;
 pub static mut HEAL_TRYS: u32 = 0;            // 自愈重试次数(限次防死循环)
 
@@ -85,32 +91,22 @@ pub static PKG_NAME: [u8; 18] = *b"com.chaos.manager\0";
 pub static ICON_PATH: [u8; 27] = *b"/data/chaos/chaos_icon.bin\0";
 
 #[no_mangle]
-pub static SETTINGS_ICON_PATH: [u8; 36] = *b"/data/chaos/chaos_icon_settings.bin\0";
-
-#[no_mangle]
 pub static DISPLAY_NAME: [u8; 6] = *b"Chaos\0";
 
 #[no_mangle]
 pub static PAGE_MAIN: [u8; 5] = *b"main\0";
 
-// 页名(互异即可, page_goto 按 page_id 解析; page1-3=目录0-2级 page4/5/6=美化二级
-//  page7=查看)。文件管理原来占 6 页(page1-6), 为了给"更换字体""桌面图标""系统模糊"
-//  三个二级页腾出**独立 page_id**(独立 page_id 才有固件的页面跳转动画), 目录页收到 3 级:
-//  最深进到 /data/chaos(再往下的 icons/<包号> 这级进不去了, 由美化页的列表代管)。
+// 页名(互异即可, page_goto 按 page_id 解析; page1-4=目录0-3级 page5/6=美化二级
+//  page7=查看)。文件管理原来占 6 页(page1-6), 为了给"更换字体""桌面图标"
+//  两个二级页腾出**独立 page_id**(独立 page_id 才有固件的页面跳转动画), 目录页收到 4 级:
+//  文件管理最深到 /a/b/c(/data/chaos/icons 够用, 再往下进不去了)。
 pub static PAGE_DIR0: [u8; 6] = *b"files\0";
 
-/// 页2: 时间/日期设置(独立注册页)。原来这一格是文件管理的第 2 级目录，
-/// 文件管理入口退役后没人再跳进来，页名跟着改判 —— 页名只是 page_goto 的解析键。
-pub static PAGE_TIME: [u8; 8] = *b"timeset\0";
+pub static PAGE_DIR1: [u8; 7] = *b"files1\0";
 
-/// 页3: 日期设置第二步(月 + 日)。原来这一格是文件管理的第 3 级目录(files2)，
-/// 入口退役后一直不可达，日期拆两屏之后腾给它。页名只是 page_goto 的解析键，
-/// 改它要三处同步(state / ipc / page 的 PAGE_TABLE)。
-pub static PAGE_DATEMD: [u8; 7] = *b"datemd\0";
+pub static PAGE_DIR2: [u8; 7] = *b"files2\0";
 
-/// 页4: 系统美化 -> 系统模糊(二级)。原来这一格是目录第 4 级(files3),
-/// 为了让模糊页有真正的 page_goto/page_back 动画而重新分配过来。
-pub static PAGE_BLUR: [u8; 8] = *b"blursub\0";
+pub static PAGE_DIR3: [u8; 7] = *b"files3\0";
 
 /// 页5: 系统美化 -> 更换字体(二级)。页名沿用 "textsub" —— 它只是 page_goto 的解析键,
 /// 与页面内容无关, 改它就要三处同步(state/ipc/page), 收益为零。
@@ -119,70 +115,24 @@ pub static PAGE_TXTSUB: [u8; 8] = *b"textsub\0";
 /// 页6: 系统美化 -> 桌面图标(二级)
 pub static PAGE_ICONSUB: [u8; 8] = *b"iconsub\0";
 
-pub static PAGE_EXCL: [u8; 7] = *b"excl\0\0\0";
+pub static PAGE_VIEWR: [u8; 7] = *b"viewer\0";
 
 pub static PAGE_WFACES: [u8; 7] = *b"wfaces\0";
 
 pub static PAGE_ROT: [u8; 8] = *b"wfshake\0";
 pub static PAGE_MGR: [u8; 7] = *b"wfmgmt\0";
 pub static PAGE_BRIGHT: [u8; 7] = *b"bright\0";
-pub static PAGE_CACHE: [u8; 6] = *b"cache\0";
+pub static PAGE_PET: [u8; 4] = *b"pet\0";
 pub static PAGE_FONTD: [u8; 6] = *b"fontd\0";
-pub static PAGE_ABOUT: [u8; 6] = *b"about\0";
-
-/// 页15: 系统模糊 -> 模糊区域(三级)。四个背景替换区域(启动器/控制中心/通知中心/小部件)的开关。
-pub static PAGE_ZONE: [u8; 9] = *b"blurzone\0";
-
-/// 页16: 主页 -> 震动(三级)。滑动震动开关 + 测试震动。
-pub static PAGE_VIB: [u8; 8] = *b"vibtest\0";
-
-/// 页17: 设置 -> 运行日志。/data/chaos/chaos.log 的尾部展示与清空。
-pub static PAGE_LOG: [u8; 6] = *b"logpg\0";
-
-/// 页18: 设置 -> 关于。版本、编译时间、固件、开发者分列。
-pub static PAGE_ABOUT2: [u8; 7] = *b"about2\0";
-
-/// 页19: 设置 -> 恢复 fetch 支持。展示自启动安装与使用说明。
-pub static PAGE_FETCH: [u8; 6] = *b"fetch\0";
-
-/// 页20: 关于 -> 开放源代码许可列表。
-pub static PAGE_LICENSES: [u8; 8] = *b"license\0";
-
-/// 页21: MIBAND10PRO-TUNMODULE 的 MPL-2.0 许可正文。
-pub static PAGE_LICENSE_MPL: [u8; 8] = *b"mpl2lic\0";
-
-/// 页22: 设置 -> 系统关于页面修改 -> 系统版本显示。三个预设与自定义入口。
-pub static PAGE_SYSVER: [u8; 7] = *b"sysver\0";
-
-/// 页23: 通用英文数字键盘。
-pub static PAGE_KEYBOARD: [u8; 9] = *b"keyboard\0";
-
-/// 页24: 设置 -> 系统关于页面修改。
-pub static PAGE_ABOUT_MOD: [u8; 9] = *b"aboutmod\0";
-
-/// 页25: 系统关于页面修改 -> 手环系统文本。两个预设与自定义入口。
-pub static PAGE_SYSTEXT: [u8; 8] = *b"systext\0";
-
-/// 页26: 系统关于页面修改 -> 设备名称。五个预设与自定义入口。
-pub static PAGE_DEVNAME: [u8; 8] = *b"devname\0";
-
-/// 页27: 系统关于页面修改 -> 手环型号。三个预设与自定义入口。
-pub static PAGE_DEVMODEL: [u8; 9] = *b"devmodel\0";
-
-/// 页28: 系统美化 -> 应用列表设置(二级)。桌面图标的缩放/排距/内缩三个开关。
-pub static PAGE_APPLIST: [u8; 8] = *b"applist\0";
-
-/// 页29: 应用管理 -> 应用详情(P0 占位)。
-pub static PAGE_DETAIL: [u8; 7] = *b"detail\0";
-
-/// 页30: 应用管理 -> 批量操作(P0 占位)。
-pub static PAGE_BATCH: [u8; 6] = *b"batch\0";
 
 pub static mut APP_META: [u32; 16] = [0; 16];
 
-pub const PAGE_COUNT: usize = 31;                   // 注册页数(页0..页30)
+#[cfg(feature="n67")]
+pub const PAGE_COUNT: usize = 32;
+#[cfg(not(feature="n67"))]
+pub const PAGE_COUNT: usize = 14;                   // 注册页数(页0..页13)
 pub const MAX_PID: usize = PAGE_COUNT - 1;          // 页号上界, 所有 pid 校验统一引用它
-pub static mut DESC: [u32; 899] = [0; 899];         // 31 页 × 29 word(116B/页, 固件描述符尺寸)
+pub static mut DESC: [u32; 406] = [0; 406];         // 14 页 × 29 word(116B/页, 固件描述符尺寸)
 
 pub static mut NOTIF: [u32; 22] = [0; 22];
 
@@ -200,7 +150,7 @@ pub static mut THUNKS_BUF: [u8; 4096] = [0; 4096];
 
 pub static mut THUNKS_LEN: u32 = 0;
 
-pub static BANNER_TEXT: &[u8] = "Chaos 已安装！\0".as_bytes(); // 应用名 = Chaos(中英文统一)
+pub static BANNER_TEXT: &[u8] = "Chaos 安装完成！\0".as_bytes(); // 安装完成通知标题/正文
 
 // 页面 UI 生命周期状态（照固件自带页面的模式：on_create 存 r1，渲染在 on_resume）
 pub static mut APP_REGISTERED: u32 = 0;  // app 已注册标志（防 notify 触发的 INSTALL 重入）
@@ -216,7 +166,7 @@ pub static mut LANG: u32 = 0;  // 语言: 0=EN 1=ZH（0x18 设中文, 0x19 设�
 // 内容现在与 DISPLAY_NAME 一致 —— 语言差异从此只影响别的文案。
 pub static NAME_ZH: &[u8] = "Chaos\0".as_bytes();
 
-pub static BODY_EN: &[u8] = "Chaos installed!\0".as_bytes();
+pub static BODY_EN: &[u8] = "Chaos installation complete!\0".as_bytes();
 
 pub static mut APP_ID: u32 = 0;   // 运行时选定的 app_id（白名单空槽自动分配）
 
@@ -243,30 +193,63 @@ pub const APPID_POOL: [u32; 1] = [0xC8]; // app_id=200。0xC8 与 0xCD 实测都
 // 页型: 信息页(label整段+2动作行) / 目录页(10行动态条目) / 查看页(label整块+Next/Back)
 // 目录: opendir/readdir/closedir(0x0C1E45xx, 与系统 ls 实现的调用点核对 + 真机验证)
 // 红线: root永不自建, content=set_size(336,424)+align(2,0,56)+pad_bottom(32), 控件挂content
+#[cfg(feature = "n67")]
+pub const FW_STYLE_MISANS_REG_24: u32 = 0x00000000;
+#[cfg(not(feature = "n67"))]
 pub const FW_STYLE_MISANS_REG_24: u32 = 0x2010_CE44; // MiSans-Regular 24px 样式对象(固件开机代码里的字体样式常量, 中文渲染必需)
 // 系统"数据行"用的两个文字样式对象(心率区间面板每行的名称/数值就是它们)
+#[cfg(feature = "n67")]
+pub const FW_STYLE_HR_NAME: u32 = 0x00000000;
+#[cfg(not(feature = "n67"))]
 pub const FW_STYLE_HR_NAME: u32 = 0x2010_CE5C;
+#[cfg(feature = "n67")]
+pub const FW_STYLE_HR_VALUE: u32 = 0x00000000;
+#[cfg(not(feature = "n67"))]
 pub const FW_STYLE_HR_VALUE: u32 = 0x2010_CEF8;
 
 // 表盘链(0xCA7C67C 反汇编核对):
+#[cfg(feature = "n67")]
+pub const WF_MGR_PTR: u32 = 0x200CACD0;
+#[cfg(not(feature = "n67"))]
 pub const WF_MGR_PTR: u32 = 0x2013_FE6C;             // watchface_manager 全局指针(SRAM字): mgr=*此址
 
+#[cfg(feature = "n67")]
+pub const FW_SET_WATCHFACE: u32 = 0x0C453B91;
+#[cfg(not(feature = "n67"))]
 pub const FW_SET_WATCHFACE: u32 = 0x0CA9_5C31;       // set_watchface_by_id(id) 数据层(pending+缓存+持久化JSON)
 
+#[cfg(feature = "n67")]
+pub const FW_REFRESH_CUR_WF: u32 = 0x0C30B8BD;
+#[cfg(not(feature = "n67"))]
 pub const FW_REFRESH_CUR_WF: u32 = 0x0C5F_32B9;      // refresh_cur_watchface(force,node) 运行时层(destroy旧+create新+激活)
 
+#[cfg(feature = "n67")]
+pub const WF_ENGINE_CUR: u32 = 0x200CEA1C;
+#[cfg(not(feature = "n67"))]
 pub const WF_ENGINE_CUR: u32 = 0x2011_9770;          // 引擎当前表盘节点指针字: node = *此址
 
 // 摇一摇(与固件 system_guesture 模块一样订阅 quick_guesture 手势总线, 不自己碰传感器):
 // 手势码(固件 system handler 0x0C4BD0FC 分支自证, 日志串即类型名):
 pub const GC_SHAKE: u32 = 0x1C2;                     // TYPE_GUESTURE_SHAKE 摇一摇(我们要的); 0x1C3=TYPE_GUESTURE_WRIST 抬腕亮屏 必须丢弃
 
+#[cfg(feature = "n67")]
+pub const FW_OPENDIR: u32 = 0x0C0E4139;
+#[cfg(not(feature = "n67"))]
 pub const FW_OPENDIR: u32 = 0x0C1E_4529;           // opendir(path)->DIR*(0=失败+errno) 真机验证
 
+#[cfg(feature = "n67")]
+pub const FW_READDIR: u32 = 0x0C0E4199;
+#[cfg(not(feature = "n67"))]
 pub const FW_READDIR: u32 = 0x0C1E_4591;           // readdir(DIR*)->dirent*{d_type@0,d_name@1}(0=尽) 真机验证
 
+#[cfg(feature = "n67")]
+pub const FW_CLOSEDIR: u32 = 0x0C0E4171;
+#[cfg(not(feature = "n67"))]
 pub const FW_CLOSEDIR: u32 = 0x0C1E_4565;          // closedir(DIR*) 真机验证
 
+#[cfg(feature = "n67")]
+pub const FW_ERRNO_LOCATION: u32 = 0x0C0E4121;
+#[cfg(not(feature = "n67"))]
 pub const FW_ERRNO_LOCATION: u32 = 0x0C1E_45BD;    // __errno()->int*(固件自带 config 与 nsh 的调用点核对)
 
 // NuttX dirent.h 的 d_type 取值(readdir 返回的 dirent 首字节)。
@@ -358,8 +341,6 @@ pub static mut TIMER_CREATE_N: u32 = 0;   // 诊断: 我们一共创建了几个
 pub static mut TICK_ADAPT: u32 = 0;
 /// 当前已生效的周期(避免每拍都调 set_period; 也用于"变了才写")
 pub static mut TICK_PERIOD_MS: u32 = 50;
-/// 自适应关掉时滚动提速也不会生效 —— 报过一次就置位, 别让真机把它看成"提速了但没效果"。
-pub static mut TICK_ADAPT_WARN: u32 = 0;
 
 pub static mut SHAKE_PENDING: u32 = 0;                   // 回调置旗, timer 消费
 
@@ -367,15 +348,24 @@ pub static mut SHAKE_COOL: u32 = 0;                     // 冷却 tick
 // 数据行组件句柄(0=存储行 1=内存行): [行, 数值标签, 进度条]
 pub static mut DR_HANDLES: [[u32; 3]; 2] = [[0; 3]; 2];
 
-// (2026-10-15) 页12 缓存清理旧状态已退役(原 CACHE_MSG/CACHE_FILES/CLEAN_REQ/
-// CACHE_HAS_RESULT), 新状态在 cacheclean.rs(CC_MSG/CC_ARM/CC_REQ/CC_HAS_RESULT);
-// 应用管理状态在 appmgr.rs。
+// 页12 蓝牙扫描状态；实际扫描由 N67 固件自带 bttool/NSH 执行。
+pub static mut BT_SCAN_STATUS: [u8; 64] = [0; 64];
+pub static mut BT_SCAN_REQ: u32 = 0;
+
+// 旧缓存清理状态保留，避免破坏现有文件引擎布局。
+pub static mut CACHE_MSG: [u8; 64] = [0; 64];     // 首行文本(扫描结果或清理结果)
+pub static mut CACHE_FILES: u32 = 0;              // 扫描/清理的文件数
+pub static mut CLEAN_REQ: u32 = 0;                // 1=请求清理
+pub static mut CACHE_HAS_RESULT: u32 = 0;         // 1=CACHE_MSG 是刚出的清理结果(渲染消费一次)
 
 /// 字体创建失败时固件回退使用的 flash 静态默认字体(`LV_FONT_DEFAULT`)。
 /// 依据: `vg_font_create_core`(0x0C8603B0) 的 param error / check 失败两条分支
 /// 都 `mov r0,r4`, r4 = 池 0x0C860468 处的 0x2CCE1734; `miwear_font_create`
 /// 越界返回 0, 但成功路径拿到的失败值就是它。`vg_font_destroy`(0x0C860484)
 /// 用同值做保护门。静态核对
+#[cfg(feature = "n67")]
+pub const FW_FONT_DEFAULT: u32 = 0x2C684EEC;
+#[cfg(not(feature = "n67"))]
 pub const FW_FONT_DEFAULT: u32 = 0x2CCE_1734;
 /// `lv_global` 基址（`lv_init` 0x0C1663EC 对它做 `memset(0x20103174, 0, 0x20c)` +
 /// `memzero(+8, 0x318)`，即整块约 0x320 字节）。字体管理器单例就是这个块的第一个字
@@ -412,7 +402,7 @@ pub const FACE_LINE_HEIGHT_OFF: u32 = 0x0C;
 
 pub static mut APP_FG: u32 = 0;                  // 1 = 我们的应用在前台(on_resume 置, on_pause/on_destroy 清)
 
-pub static mut SHAKE_EN: u32 = 0;                        // 开关(信息页行3切换)
+pub static mut SHAKE_EN: u32 = 1;                        // 开关(信息页行3切换)
 
 pub static mut RENDER_REQ: u32 = RENDER_NONE;            // 待重建页号(由 lv_timer 消费)
 
@@ -433,10 +423,12 @@ pub static mut WF_DESEL_CNT: u32 = 0;
 pub static mut WF_MAINTYPE: i32 = -1;                    // 主表盘 type(=引擎当前面的 type; -1=未知不过滤)
 
 #[used]
+#[cfg(not(feature = "n67"))]
 #[link_section = ".init_array"]
 pub static CHAOS_CTOR: unsafe extern "C" fn() = crate::chaos_ctor;
 
 #[used]
+#[cfg(not(feature = "n67"))]
 #[link_section = ".fini_array"]
 pub static CHAOS_DTOR: unsafe extern "C" fn() = crate::chaos_dtor;
 
@@ -461,8 +453,3 @@ impl Page {
 pub static mut PAGES: [Page; PAGE_COUNT] = [Page::EMPTY; PAGE_COUNT];
 // 每页标题文本缓冲: 标题 = 进入该页时点的行控件名, 目录页/查看页是动态的
 pub static mut TITLE_TXT: [[u8; 48]; PAGE_COUNT] = [[0; 48]; PAGE_COUNT];
-
-// 主页圆环: [弧0, 弧1, 标签0, 标签1] / 标签文本 / 上次百分比
-pub static mut RING_H: [u32; 4] = [0; 4];
-pub static mut RING_TXT: [[u8; 48]; 2] = [[0; 48]; 2];
-pub static mut RING_PREV: [i32; 2] = [-1; 2];

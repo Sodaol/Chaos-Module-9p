@@ -1,0 +1,439 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+use crate::mem::{rd8, rd32};
+use crate::*;
+
+
+
+const FS_DRV: u32 = 0x2010_3340;
+
+const FS_CACHE: u32 = 0x2010_3344;
+
+const FS_OPEN_SLOT: u32 = 0x2010_334C;
+
+const FS_OPEN_ORIG: u32 = 0x1C05_7C51;
+
+const MODE_RD: u32 = 2;
+
+
+
+
+const ICON_DIR: &[u8] = b"/data/chaos/icons";
+
+const RH_PATH_CAP: usize = 56;
+static mut RH_PATH: [u8; RH_PATH_CAP] = [0; RH_PATH_CAP];
+
+static mut RH_CACHE_PATH: [u8; 96] = [0; 96];
+static mut RH_CACHE_BUSY: u32 = 0;
+static mut RH_CACHE_RULE: u32 = 0;
+static mut RH_CACHE_FRAME: u32 = 0;
+
+const IMAGE_CACHE_SLOT: u32 = 0x2010_329C;
+const HEADER_CACHE_SLOT: u32 = 0x2010_32A0;
+
+
+
+
+
+struct Rule {
+    
+    dir: &'static [u8],
+    
+    name: &'static [u8],
+    
+    stem: &'static [u8],
+}
+
+
+
+
+
+
+const RULES: [Rule; 24] = [
+    
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"flashlight_all.bin", stem: b"ctrl_flashlight" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"setting_all.bin",    stem: b"ctrl_setting" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"battery_all.bin",    stem: b"ctrl_battery" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"bright_open.bin",    stem: b"ctrl_bright" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"alarm_all.bin",      stem: b"ctrl_alarm" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"findphone_all.bin",  stem: b"ctrl_findphone" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"disturb_open.bin",   stem: b"ctrl_disturb" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"raise_open.bin",     stem: b"ctrl_raise" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"game_mode.bin",      stem: b"ctrl_game" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"phone_conn.bin",     stem: b"ctrl_phone_conn" },
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"phone_disconn.bin",  stem: b"ctrl_phone_disconn" },
+    
+    Rule { dir: b"/resource/app/control_center/icon/", name: b"dnd_0.bin",          stem: b"ctrl_dnd" },
+    
+    Rule { dir: b"/resource/app/settings/icon/", name: b"notify.bin",      stem: b"set_notify" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"desktop.bin",     stem: b"set_desktop" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"display.bin",     stem: b"set_display" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"disturb.bin",     stem: b"set_disturb" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"safe.bin",        stem: b"set_safe" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"battery.bin",     stem: b"set_battery" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"motion.bin",      stem: b"set_motion" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"preference.bin",  stem: b"set_preference" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"my_device.bin",   stem: b"set_mydevice" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"wrist.bin",       stem: b"set_wrist" },
+    Rule { dir: b"/resource/app/settings/icon/", name: b"hr_broadcast.bin", stem: b"set_hr" },
+    
+    
+    
+    Rule { dir: b"/resource/app/perpetual_calendar/", name: b"calendar_background_icon.bin", stem: b"cal_background" },
+];
+
+
+
+pub(crate) const RULE_N: usize = RULES.len();
+
+pub(crate) fn rule_stem(k: usize) -> &'static [u8] {
+    RULES[k].stem
+}
+
+
+
+static mut RH_ON: u32 = 0;
+
+static mut RH_ORIG: u32 = 0;
+
+static mut RH_HIT: u32 = 0;
+static mut RH_OK: u32 = 0;
+static mut RH_FALLBACK: u32 = 0;
+
+static mut RH_CAL_HIT: u32 = 0;
+
+
+
+
+
+
+unsafe fn rb(p: u32) -> u8 {
+    if !plausible_ptr(p) { return 0; }
+    rd8(p as *const u8)
+}
+
+
+unsafe fn path_len(p: u32, cap: usize) -> usize {
+    let mut n = 0usize;
+    while n < cap {
+        if rb(p + n as u32) == 0 { break; }
+        n += 1;
+    }
+    n
+}
+
+
+unsafe fn at_is(p: u32, start: usize, s: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < s.len() {
+        if rb(p + (start + i) as u32) != s[i] { return false; }
+        i += 1;
+    }
+    true
+}
+
+
+
+
+
+
+unsafe fn basename_at(abs: u32, n: usize) -> usize {
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i < n {
+        if rb(abs + i as u32) == b'/' { last = i + 1; }
+        i += 1;
+    }
+    last
+}
+
+
+unsafe fn dnd_frame(abs: u32, base: usize, len: usize) -> bool {
+    if len < 9 || len > 10 || !at_is(abs, base, b"dnd_")
+        || !at_is(abs, base + len - 4, b".bin") {
+        return false;
+    }
+    let digits = len - 8;
+    let mut value = 0u32;
+    let mut i = 0usize;
+    while i < digits {
+        let c = rb(abs + (base + 4 + i) as u32);
+        if c < b'0' || c > b'9' || (digits > 1 && i == 0 && c == b'0') {
+            return false;
+        }
+        value = value * 10 + (c - b'0') as u32;
+        i += 1;
+    }
+    value <= 62
+}
+
+
+
+
+unsafe fn rule_match(abs: u32, n: usize) -> Option<usize> {
+    let base = basename_at(abs, n);
+    let name_len = n - base;
+    let mut k = 0usize;
+    while k < RULES.len() {
+        let r = &RULES[k];
+        
+        if (name_len == r.name.len() && at_is(abs, base, r.name))
+            || (r.stem == b"ctrl_dnd" && dnd_frame(abs, base, name_len)) {
+            
+            if base == r.dir.len() && at_is(abs, 0, r.dir) {
+                return Some(k);
+            }
+        }
+        k += 1;
+    }
+    None
+}
+
+
+
+unsafe fn build_target(rule: usize, pack: u32) {
+    let dst = core::ptr::addr_of_mut!(RH_PATH) as *mut u8;
+    let mut o = 0usize;
+    if pack < 1 || pack > 8 {
+        write_volatile(dst, 0);
+        return;
+    }
+    let mut i = 0usize;
+    while i < ICON_DIR.len() {
+        write_volatile(dst.add(o), ICON_DIR[i]);
+        o += 1;
+        i += 1;
+    }
+    write_volatile(dst.add(o), b'/'); o += 1;
+    write_volatile(dst.add(o), b'0' + ((pack / 10) % 10) as u8); o += 1;
+    write_volatile(dst.add(o), b'0' + (pack % 10) as u8); o += 1;
+    write_volatile(dst.add(o), b'/'); o += 1;
+    let s = RULES[rule].stem;
+    i = 0;
+    while i < s.len() && o < RH_PATH_CAP - 6 {
+        write_volatile(dst.add(o), s[i]);
+        o += 1;
+        i += 1;
+    }
+    for c in b".bin" {
+        if o < RH_PATH_CAP - 1 { write_volatile(dst.add(o), *c); o += 1; }
+    }
+    write_volatile(dst.add(o), 0);
+}
+
+
+
+
+
+
+
+
+
+#[no_mangle]
+pub(crate) unsafe extern "C" fn chaos_fs_open(drv: u32, path: u32, mode: u32) -> i32 {
+    let orig = st_rd!(RH_ORIG);
+    if orig == 0 { return -1; }
+    let f: unsafe extern "C" fn(u32, u32, u32) -> i32 = core::mem::transmute(orig as usize);
+    
+    if drv != FS_DRV || mode != MODE_RD || path == 0 { return f(drv, path, mode); }
+
+    let n = path_len(path, RH_PATH_CAP - 1);
+    if n == 0 || n >= RH_PATH_CAP - 1 { return f(drv, path, mode); }
+
+    
+    let mut abs = [0u8; RH_PATH_CAP];
+    abs[0] = b'/';
+    let mut i = 0usize;
+    while i < n {
+        abs[i + 1] = rb(path + i as u32);
+        i += 1;
+    }
+    abs[n + 1] = 0;
+
+    match rule_match(abs.as_ptr() as u32, n + 1) {
+        None => f(drv, path, mode),
+        Some(k) => {
+            
+            if RULES[k].stem == CAL_STEM && !icon_apply::calendar_available() {
+                return f(drv, path, mode);
+            }
+            st_wr!(RH_HIT, st_rd!(RH_HIT).wrapping_add(1));
+            
+            
+            if RULES[k].stem.len() == CAL_STEM.len()
+                && at_is(abs.as_ptr() as u32, 0, b"/resource/app/perpetual_calendar/") {
+                st_wr!(RH_CAL_HIT, st_rd!(RH_CAL_HIT).wrapping_add(1));
+            }
+            let pack = icon_apply::cur_pack();
+            if pack < 1 || pack > 8 { return f(drv, path, mode); }
+            build_target(k, pack);
+            
+            let rel = (core::ptr::addr_of!(RH_PATH) as u32) + 1;
+            let got = f(drv, rel, mode);
+            if got > 0 {
+                st_wr!(RH_OK, st_rd!(RH_OK).wrapping_add(1));
+                got
+            } else {
+                
+                st_wr!(RH_FALLBACK, st_rd!(RH_FALLBACK).wrapping_add(1));
+                f(drv, path, mode)
+            }
+        }
+    }
+}
+
+
+
+
+
+
+
+unsafe fn drv_ready() -> bool {
+    if rd8(FS_DRV as *const u8) != b'/' { return false; }
+    if rd32(FS_CACHE as *const u32) != 4096 { return false; }
+    let slot = rd32(FS_OPEN_SLOT as *const u32);
+    slot != 0
+}
+
+
+
+
+pub(crate) unsafe fn install() {
+    if st_rd!(RH_ON) != 0 { return; }
+    if !drv_ready() { return; }
+    let slot = rd32(FS_OPEN_SLOT as *const u32);
+    if slot == chaos_fs_open as *const () as u32 { return; }
+    if !plausible_ptr(slot) { return; }
+    st_wr!(RH_ORIG, slot);
+    write_volatile(FS_OPEN_SLOT as *mut u32, chaos_fs_open as *const () as u32);
+    
+    if rd32(FS_OPEN_SLOT as *const u32) == chaos_fs_open as *const () as u32 {
+        st_wr!(RH_ON, 1);
+    }
+}
+
+
+pub(crate) unsafe fn refresh_cache() {
+    st_wr!(RH_CACHE_RULE, 0);
+    st_wr!(RH_CACHE_FRAME, 0);
+    st_wr!(RH_CACHE_BUSY, 1);
+}
+
+pub(crate) unsafe fn pending() -> bool { st_rd!(RH_CACHE_BUSY) != 0 }
+
+
+unsafe fn refresh_cache_step() {
+    if !pending() || !fw_api::screen_is_on() || st_rd!(RH_ON) == 0 { return; }
+    if !plausible_ptr(rd32(IMAGE_CACHE_SLOT as *const u32))
+        || !plausible_ptr(rd32(HEADER_CACHE_SLOT as *const u32)) { return; }
+    let mut k = st_rd!(RH_CACHE_RULE) as usize;
+    while k < RULES.len() {
+        let rule = &RULES[k];
+        
+        if rule.stem == b"ctrl_phone_conn" || rule.stem == b"ctrl_phone_disconn"
+            || rule.stem == CAL_STEM {
+            k += 1;
+            st_wr!(RH_CACHE_RULE, k as u32);
+            continue;
+        }
+        let dst = core::ptr::addr_of_mut!(RH_CACHE_PATH) as *mut u8;
+        let mut n = 0usize;
+        for c in rule.dir { write_volatile(dst.add(n), *c); n += 1; }
+        if rule.stem == b"ctrl_dnd" {
+            for c in b"dnd_" { write_volatile(dst.add(n), *c); n += 1; }
+            let frame = st_rd!(RH_CACHE_FRAME);
+            if frame >= 10 { write_volatile(dst.add(n), b'0' + (frame / 10) as u8); n += 1; }
+            write_volatile(dst.add(n), b'0' + (frame % 10) as u8); n += 1;
+            for c in b".bin" { write_volatile(dst.add(n), *c); n += 1; }
+            if frame < 62 { st_wr!(RH_CACHE_FRAME, frame + 1); }
+            else { st_wr!(RH_CACHE_FRAME, 0); st_wr!(RH_CACHE_RULE, (k + 1) as u32); }
+        } else {
+            for c in rule.name { write_volatile(dst.add(n), *c); n += 1; }
+            st_wr!(RH_CACHE_RULE, (k + 1) as u32);
+        }
+        write_volatile(dst.add(n), 0);
+        fw_api::fw_img_free_by_path(dst as u32);
+        return;
+    }
+    st_wr!(RH_CACHE_BUSY, 0);
+}
+
+
+pub(crate) unsafe fn uninstall() {
+    if st_rd!(RH_ON) == 0 { return; }
+    let orig = st_rd!(RH_ORIG);
+    if orig == 0 { return; }
+    write_volatile(FS_OPEN_SLOT as *mut u32, orig);
+    st_wr!(RH_ON, 0);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const CAL_STEM: &[u8] = b"cal_background";
+
+
+pub(crate) unsafe fn tick() {
+    if st_rd!(RH_ON) == 0 { install(); }
+    refresh_cache_step();
+}
+
+
+pub(crate) unsafe fn counters() -> (u32, u32, u32, u32) {
+    (st_rd!(RH_ON), st_rd!(RH_HIT), st_rd!(RH_OK), st_rd!(RH_FALLBACK))
+}
+
+
+
+pub(crate) unsafe fn sys_counters() -> (u32, u32, u32) {
+    (st_rd!(RH_HIT), st_rd!(RH_OK), st_rd!(RH_FALLBACK))
+}
+
+
+
+pub(crate) unsafe fn cal_hit() -> u32 { st_rd!(RH_CAL_HIT) }

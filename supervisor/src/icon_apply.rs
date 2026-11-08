@@ -48,6 +48,7 @@ use crate::*;
 /// 检查认不出它, 所以本表按 stem 找节点的方法对它失效, 必须按 app_id=69 找
 /// (见 plan_apply 的 IC_CAL_SLOT 特例)。换成我们的路径后, 桌面画的就是整张素材,
 /// 固件光栅化进去的日期文字不再显示(那两枚文字本来是烤在缓冲里的)。
+#[cfg(not(feature="n67"))]
 const ICON_STEMS: [&[u8]; IC_STEM_N] = [
     b"activities", b"aivs", b"alarm", b"alipay",
     b"breath", b"calendar", b"camera", b"card",
@@ -62,11 +63,13 @@ const ICON_STEMS: [&[u8]; IC_STEM_N] = [
 ];
 
 /// 素材条数(= 固件桌面 launcher 应用图标全集)
+#[cfg(not(feature="n67"))]
 const IC_STEM_N: usize = 38;
 
 /// 日历(perpetual_calendar)在 ICON_STEMS 里的槽位。编译期钉死: 表错位就直接构不过,
 /// 不许悄悄换错应用。
 const IC_CAL_SLOT: usize = 20;
+#[cfg(not(feature="n67"))]
 const _: () = assert!(ICON_STEMS[IC_CAL_SLOT][0] == b'p'
     && ICON_STEMS[IC_CAL_SLOT][1] == b'e'
     && ICON_STEMS[IC_CAL_SLOT][2] == b'r');
@@ -89,7 +92,7 @@ pub(crate) const IC_PACK_MAX: usize = 8;
 /// 清单文件恒长
 const IC_INDEX_SIZE: usize = IC_LINE * IC_PACK_MAX;
 /// 单条路径槽字节数：目录 18 + 包号 2 + '/' 1 + 最长 stem 19 + ".bin" 4 + NUL = 45, 留到 56
-const ICON_SLOT: usize = 128;
+const ICON_SLOT: usize = 56;
 /// 行文本缓冲容量(界面行: 前缀 4 + 短名 12 + "再点一次删除 " 21 + 余量)
 const IC_ROW_CAP: usize = 48;
 
@@ -106,7 +109,7 @@ static mut IC_PACK_N: u32 = 0;
 /// 1 = 清单已读过(界面上每次进页会强制重读, 见 refresh_packs)
 static mut IC_LOADED: u32 = 0;
 
-// ===== 图标应用队列状态 =====
+// ===== 状态(RAM 无痕，重启即回原图标) =====
 static mut IC_BUILT: u32 = 0;       // 1 = 路径串已按 IC_PACK 拼好
 static mut IC_PACK: u32 = 0;        // 当前选中的包号, 0 = 系统原图标
 static mut IC_REQ: u32 = 0;         // 0=无 1=应用 IC_PACK 2=恢复原图标
@@ -126,6 +129,7 @@ static mut IC_SAVED: [u32; IC_STEM_N] = [0; IC_STEM_N];     // 原路径指针(�
 // 做法与本项目其它看门同款: 周期性读回 + 影子比对, 只在"确实被冲回"时才动笔,
 // 空闲态低频(约 2 秒一查, 一次注册表遍历 + 一次字节比对)。
 static mut IC_CALT: u32 = 0;        // 看门节拍计数
+static mut IC_LATCH: u32 = 0;       // 真正补写成功的次数(界面读数用)
 /// 已核对日历整图素材的包号，0 表示保留系统日历。
 static mut IC_CAL_PACK: u32 = 0;
 /// 桌面记录不在位时按槽登记补刷，回到桌面后每拍刷新一个应用。
@@ -211,7 +215,7 @@ unsafe fn icon_packs_parse(buf: &[u8; IC_INDEX_SIZE], got: usize) {
         let mut k = 3usize;
         while k < IC_LINE && ln < 15 {
             let c = buf[off + k];
-            if c < 0x21 || c >= 0x7f { break; }
+            if c < 0x21 || c == 0x7f || (c >= 0x80 && !cfg!(feature="n67")) { break; }
             name[ln] = c;
             ln += 1;
             k += 1;
@@ -418,8 +422,17 @@ unsafe fn icon_file_ok(slot: usize) -> bool {
     let p = core::ptr::addr_of!(ICON_FILES[slot]) as *const u8;
     let fd = fw_api::open(p, fw_api::oflag::RDONLY, 0);
     if fd < 0 { return false; }
+    #[cfg(feature="n67")]
+    let ok={
+        let mut h=[0u8;4];let n=fw_api::read(fd,h.as_mut_ptr(),4);let v=u32::from_le_bytes(h);let w=(v>>10)&2047;let ht=v>>21;
+        let mut ok=n==4 && v&31==5 && w>=48 && w<=160 && ht==w;
+        if ok{let mut left=w*w*4;let mut buf=[0u8;512];while left>0{let n=fw_api::read(fd,buf.as_mut_ptr(),left.min(512));if n<=0{ok=false;break;}left-=n as u32;}}
+        ok
+    };
+    #[cfg(not(feature="n67"))]
+    let ok=true;
     fw_api::close(fd);
-    true
+    ok
 }
 
 /// 第 pack 包在不在位(只查第一张 activities.bin)。界面用它把整包没投递的项在副标签上
@@ -470,9 +483,7 @@ unsafe fn icon_stem_eq(path: *const u8, slot: usize) -> bool {
         i += 1;
     }
     if seg1_len > 4 && buf[seg1_off + seg1_len - 4] == b'.'
-        && buf[seg1_off + seg1_len - 3] == b'b'
-        && buf[seg1_off + seg1_len - 2] == b'i'
-        && buf[seg1_off + seg1_len - 1] == b'n' { seg1_len -= 4; }
+        && (&buf[seg1_off+seg1_len-3..seg1_off+seg1_len]==b"bin" || &buf[seg1_off+seg1_len-3..seg1_off+seg1_len]==b"rle") { seg1_len -= 4; }
     (seg1_len == want.len() && icon_seg_is(buf.as_ptr(), seg1_off, seg1_len, want))
         || (seg2_len == want.len() && icon_seg_is(buf.as_ptr(), seg2_off, seg2_len, want))
 }
@@ -490,7 +501,7 @@ fn icon_seg_is(buf: *const u8, off: usize, len: usize, want: &[u8]) -> bool {
 /// 每次从头走，不缓存节点地址(文件头约束 C)。
 unsafe fn icon_find(slot: usize) -> (u32, u32, u32) {
     // 日历字段也可能是图像描述符，查找不能依赖路径形态。
-    if slot == IC_CAL_SLOT {
+    if slot == IC_CAL_SLOT && !cfg!(feature="n67") {
         let node = cal_find_by_id(CAL_APP_ID);
         if node == 0 { return (0, 0, 0); }
         return (node, CAL_APP_ID, rd32((node + fw_api::APPN_ICON) as *const u32));
@@ -502,7 +513,7 @@ unsafe fn icon_find(slot: usize) -> (u32, u32, u32) {
     while safe_ptr(node) && node != head && guard < IC_WALK_MAX {
         guard += 1;
         let path = rd32((node + fw_api::APPN_ICON) as *const u32);
-        if safe_ptr(path) && icon_stem_eq(path as *const u8, slot) {
+        if plausible_ptr(path) && icon_stem_eq(path as *const u8, slot) {
             let id = rd16((node + fw_api::APPN_ID) as *const u16) as u32;
             return (node, id, path);
         }
@@ -530,6 +541,37 @@ unsafe fn cal_find_by_id(id: u32) -> u32 {
     0
 }
 
+/// 日历格取证读数: 桌面日历格节点 +0x0C 此刻的**真实形态**(切包/重光栅化/
+/// 失败回退三种世界一眼分流)。返回 (节点+0x0C 值, 类型字符, 缓冲单例槽值)。
+///   'P'(0x2F '/') = 路径串 —— 我们的切包生效态
+///   'D'(0x19)     = 图像描述符指针 —— 固件缓冲(0x0C4EFDE8 的单例)
+///   'L'('l')      = launcher.bin 回退路径 —— 固件光栅化失败分支写的
+///   '0'           = 空   '?' = 指针不可信
+pub(crate) unsafe fn cal_dbg() -> (u32, u32, u32) {
+    if cfg!(feature="n67"){return (0,0,0);}
+    let node = cal_find_by_id(CAL_APP_ID);
+    if node == 0 { return (0, b'?' as u32, 0); }
+    let v = rd32((node + fw_api::APPN_ICON) as *const u32);
+    let t = if v == 0 {
+        b'0' as u32
+    } else if plausible_ptr(v) {
+        match rd8(v as *const u8) {
+            b'/' => b'P' as u32,
+            0x19 => b'D' as u32,
+            b'l' => b'L' as u32,
+            other => other as u32,
+        }
+    } else {
+        b'?' as u32
+    };
+    // 0x2010F05C = 固件日历缓冲单例槽(0x0C4EFDE8 分配一次永久复用, 见 res_hook"日历")
+    #[cfg(not(feature="n67"))]
+    let slot = rd32(0x2010_F05C as *const u32);
+    #[cfg(feature="n67")]
+    let slot = 0;
+    (v, t, slot)
+}
+
 // ---------------------------------------------------------------------------
 // 计划与执行(每 tick 推进一个应用：refresh 内部会 rebuild 桌面，不能连做)
 // ---------------------------------------------------------------------------
@@ -548,7 +590,7 @@ unsafe fn plan_apply() {
     let mut n = 0usize;
     while k < ICON_STEMS.len() {
         let present = icon_file_ok(k);
-        if k == IC_CAL_SLOT && present { st_wr!(IC_CAL_PACK, st_rd!(IC_PACK)); }
+        if k == IC_CAL_SLOT && present && !cfg!(feature="n67") { st_wr!(IC_CAL_PACK, st_rd!(IC_PACK)); }
         let (node, id, _) = icon_find(k);
         let saved = st_rd!(IC_SAVED[k]);
         // 有素材才应用，缺件且以前替换过则逐拍恢复系统原值。
@@ -670,6 +712,9 @@ unsafe fn point_to_ours_node(slot: usize, node: u32, id: u32) -> bool {
         if saved == 0 { st_wr!(IC_SAVED[slot], 0); }
         return false;
     }
+    if slot == IC_CAL_SLOT {
+        st_wr!(IC_LATCH, st_rd!(IC_LATCH).wrapping_add(1));
+    }
     // 桌面记录不在位时不假装刷新成功: 指针已经换了(下次进桌面会重建记录读到新路径),
     // 只是当前界面不会变 —— 这就是"有时候点了没反应"的成因。
     refresh_icon(slot, id);
@@ -759,8 +804,9 @@ unsafe fn delete_tick() {
         1 => {
             if st_rd!(IC_PACK) == st_rd!(IC_DEL) {
                 st_wr!(IC_PACK, 0);
-                crate::beautify_restore::remember_icon(0);
                 st_wr!(IC_BUILT, 0);
+                #[cfg(feature="n67")]
+                crate::beautify_restore::remember_icon(0);
                 plan_restore();
                 st_wr!(IC_DEL_ST, 2);
             } else {
@@ -867,6 +913,16 @@ pub(crate) unsafe fn entry_shown() -> u32 {
     if total > IC_ENTRY_MAX as u32 { IC_ENTRY_MAX as u32 } else { total }
 }
 
+/// 写十进制数字(只到两位, 计数超 99 就截断 —— 副标签放不下更长的)
+unsafe fn wnum(w: &mut W, v: u32) {
+    if v >= 100 {
+        w.s("99".as_bytes());
+        return;
+    }
+    if v >= 10 { w.c(b'0' + (v / 10) as u8); }
+    w.c(b'0' + (v % 10) as u8);
+}
+
 /// 填条目行的两排文本。先整体清零再按需写(与 refresh_watchface_lines 同款):
 /// 上一屏的长名字不会被下一屏读出来。
 /// 主标签 = 包名(两步删除的确认态则是"再点一次删除 X"), 副标签 = 包号 + 是否已投递。
@@ -904,6 +960,25 @@ pub(crate) unsafe fn lines_fill() {
             // 整包没投递时直接在副标签上说清楚(点下去不会有反应, 但这个状态必须写在界面上)
             if !pack_present(pack) {
                 w.s(" 未投递".as_bytes());
+            } else {
+                // 读数一律压缩到最短, 因为这一列在真机上会被界面按宽度截断
+                // (上一版写"包 01 系统21/21 日C", 末尾根本显示不出来, 等于白加)。
+                //   L = 日历节点落到我们路径上的次数(0 = 一次都没写成)
+                //   H = 固件重读日历底图文件的次数(043 常态是 0, 见 res_hook"日历"一节)
+                //   G/H = 系统图标换成我们素材的次数 / 命中规则次数
+                //   t = 日历格 +0x0C 实时形态(P=我们路径生效 D=固件缓冲 L=失败回退)
+                let (hit, ok, _fb) = res_hook::sys_counters();
+                let (_cv, ct, _slot) = cal_dbg();
+                w.s("日".as_bytes());
+                wnum(&mut w, st_rd!(IC_LATCH));
+                w.c(b'.');
+                wnum(&mut w, res_hook::cal_hit());
+                w.c(b' ');
+                w.c(ct as u8);
+                w.s(" 系".as_bytes());
+                wnum(&mut w, ok);
+                w.c(b'/');
+                wnum(&mut w, hit);
             }
         }
         w.end();
@@ -957,8 +1032,18 @@ pub(crate) unsafe fn refresh_rows() {
 }
 
 /// 点第 row 行(0..IC_ENTRY_MAX-1) —— 界面槽位在 page.rs 里映射过来
+static mut IC_DELETE_MODE:bool=false;
+pub(crate) unsafe fn delete_mode()->bool{IC_DELETE_MODE}
+pub(crate) unsafe fn toggle_delete_mode(){IC_DELETE_MODE=!IC_DELETE_MODE;st_wr!(IC_DELCONF,0);render_req(ICON_PID as usize);}
 pub(crate) unsafe fn click_row(row: usize) {
     if row >= IC_ENTRY_MAX { return; }
+    if IC_DELETE_MODE{
+        if row as u32>=entry_count(){return;}
+        let pack=entry_pack(row as u32);
+        if pack==0{return;}
+        if st_rd!(IC_DEL_ST)!=0 || st_rd!(IC_STATE)==2 || st_rd!(IC_STATE)==3 || res_hook::pending(){return;}
+        popup_ask(pack);return;
+    }
     click_entry(row as u32);
 }
 
@@ -1032,34 +1117,14 @@ unsafe fn click_entry(e: u32) {
     st_wr!(IC_PACK, pack);
     st_wr!(IC_BUILT, 0);
     st_wr!(IC_REQ, if pack == 0 { 2 } else { 1 });
+    #[cfg(feature="n67")]
     crate::beautify_restore::remember_icon(pack);
     // 勾选立刻挪到点的那一条, 不等 38 拍跑完(跑批在后台把桌面图标换过去)
     refresh_rows();
 }
 
-/// 恢复选择须等待应用、删除与补刷队列空闲。
-pub(crate) unsafe fn restore_busy() -> bool {
-    st_rd!(IC_STATE) == 2 || st_rd!(IC_STATE) == 3 || st_rd!(IC_REQ) != 0
-        || st_rd!(IC_DEL_ST) != 0 || st_rd!(IC_RB_N) != 0 || res_hook::pending()
-}
-
-/// 仅恢复仍在清单中的包，缺件交给原有资源回退处理。
-pub(crate) unsafe fn restore_selection(pack: u32) -> bool {
-    if pack == 0 { return true; }
-    if pack > IC_PACK_MAX as u32 || restore_busy() { return false; }
-    refresh_packs();
-    let mut found = false;
-    for i in 0..st_rd!(IC_PACK_N) as usize {
-        if st_rd!(IC_PACK_ID)[i] == pack { found = true; break; }
-    }
-    if !found { return false; }
-    st_wr!(IC_PACK, pack);
-    st_wr!(IC_BUILT, 0);
-    st_wr!(IC_REQ, 1);
-    true
-}
-
-/// 跑批、待消费的请求、删除与关框重建是否仍在推进。
+/// 有没有我们这一路的活在推进(供节拍自适应用): 跑批、待消费的应用/恢复请求、
+/// 删除流水线、关框后欠着的那一次整页重建。
 pub(crate) unsafe fn pending() -> bool {
     st_rd!(IC_STATE) != 0 || st_rd!(IC_REQ) != 0 || st_rd!(IC_DEL_ST) != 0
         || st_rd!(IP_POP_DIRT) != 0
@@ -1118,3 +1183,24 @@ pub(crate) unsafe fn tick() {
         }
     }
 }
+
+#[cfg(feature="n67")]
+const IC_STEM_N:usize=29;
+#[cfg(feature="n67")]
+const ICON_STEMS:[&[u8];IC_STEM_N]=[b"heartrate",b"oxygen",b"pressure",b"sleep",b"breathing",b"vitality_scale",b"sport",b"sport_record",b"sport_lesson",b"weather",b"alarm",b"timer",b"stopwatch",b"compass",b"schedule",b"dealt",b"music",b"camera",b"flashlight",b"findphone",b"interconnect",b"settings",b"mute",b"card",b"mihome",b"alipay",b"wechatpay",b"womenhealth",b"xiaoai"];
+
+#[cfg(feature="n67")]
+pub(crate) unsafe fn restore_busy()->bool{
+ IC_STATE==2||IC_STATE==3||IC_REQ!=0||IC_DEL_ST!=0||IC_RB_N!=0||res_hook::pending()
+}
+#[cfg(feature="n67")]
+pub(crate) unsafe fn restore_selection(pack:u32)->bool{
+ if pack==0{return true;}
+ if pack>IC_PACK_MAX as u32||restore_busy(){return false;}
+ refresh_packs();
+ if !IC_PACK_ID[..IC_PACK_N as usize].contains(&pack){return false;}
+ IC_PACK=pack;IC_BUILT=0;IC_REQ=1;true
+}
+
+#[cfg(feature="n67")]
+pub(crate) unsafe fn desktop_ready()->bool{desktop_live()}

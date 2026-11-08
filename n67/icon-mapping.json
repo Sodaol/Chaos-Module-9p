@@ -1,0 +1,118 @@
+[
+  {
+    "stem": "heartrate",
+    "name": "心率"
+  },
+  {
+    "stem": "oxygen",
+    "name": "血氧"
+  },
+  {
+    "stem": "pressure",
+    "name": "压力"
+  },
+  {
+    "stem": "sleep",
+    "name": "睡眠"
+  },
+  {
+    "stem": "breathing",
+    "name": "呼吸"
+  },
+  {
+    "stem": "vitality_scale",
+    "name": "元气值"
+  },
+  {
+    "stem": "sport",
+    "name": "运动"
+  },
+  {
+    "stem": "sport_record",
+    "name": "运动记录"
+  },
+  {
+    "stem": "sport_lesson",
+    "name": "运动课程"
+  },
+  {
+    "stem": "weather",
+    "name": "天气"
+  },
+  {
+    "stem": "alarm",
+    "name": "闹钟"
+  },
+  {
+    "stem": "timer",
+    "name": "倒计时"
+  },
+  {
+    "stem": "stopwatch",
+    "name": "秒表"
+  },
+  {
+    "stem": "compass",
+    "name": "指南针"
+  },
+  {
+    "stem": "schedule",
+    "name": "日程"
+  },
+  {
+    "stem": "dealt",
+    "name": "待办"
+  },
+  {
+    "stem": "music",
+    "name": "音乐"
+  },
+  {
+    "stem": "camera",
+    "name": "相机"
+  },
+  {
+    "stem": "flashlight",
+    "name": "手电筒"
+  },
+  {
+    "stem": "findphone",
+    "name": "查找手机"
+  },
+  {
+    "stem": "interconnect",
+    "name": "融合设备"
+  },
+  {
+    "stem": "settings",
+    "name": "设置"
+  },
+  {
+    "stem": "mute",
+    "name": "静音"
+  },
+  {
+    "stem": "card",
+    "name": "卡包"
+  },
+  {
+    "stem": "mihome",
+    "name": "米家"
+  },
+  {
+    "stem": "alipay",
+    "name": "支付宝"
+  },
+  {
+    "stem": "wechatpay",
+    "name": "微信支付"
+  },
+  {
+    "stem": "womenhealth",
+    "name": "女性健康"
+  },
+  {
+    "stem": "xiaoai",
+    "name": "小爱同学"
+  }
+]

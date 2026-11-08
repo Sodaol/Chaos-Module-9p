@@ -35,8 +35,6 @@ const FONT_INDEX: &[u8] = b"/data/chaos/font/index.txt\0";
 const FL_LINE: usize = 16;
 /// 清单最多几个字体 = 池位上限(font_apply::FONT_SLOT_MAX), 两边必须一致
 const FL_MAX: usize = 8;
-/// FL_SEL 的特殊值：已选择官方字体，等退出应用后恢复。
-const FL_OFFICIAL_PENDING: u32 = u32::MAX;
 /// 清单文件恒长(128 字节)
 const FL_INDEX_SIZE: usize = FL_LINE * FL_MAX;
 /// 短名缓冲字节数: 12 字节可用 + NUL 余量(16 是 .bss 里的对齐形状, 与图标那边同款)
@@ -89,6 +87,47 @@ static mut FL_SEL: u32 = 0;
 /// 上一次看到的在用池位(变了就重建本页: 勾选态与"使用中"副标签要跟上 live)
 static mut FL_LAST: u32 = 0;
 
+
+// Explicit deletion mode and persistent reservations for fonts held by firmware.
+static mut FL_DELETE_MODE:u32=0;
+#[cfg(feature="n67")] static mut FL_QUEUE_MASK:u32=0;
+#[cfg(feature="n67")] static mut FL_QUEUE_LOADED:bool=false;
+#[cfg(feature="n67")] static mut FL_QUEUE_FAILED:u32=0;
+static mut FL_DELETE_IDS:[u32;FL_MAX]=[0;FL_MAX];
+static mut FL_DELETE_NAMES:[[u8;FL_NAME_CAP];FL_MAX]=[[0;FL_NAME_CAP];FL_MAX];
+static mut FL_DELETE_N:u32=0;
+#[cfg(feature="n67")] const FL_QUEUE_FILE:&[u8]=b"/data/chaos/font/delete.mask\0";
+pub(crate) unsafe fn system_selected()->bool{font_apply::live_get()==0&&font_apply::pending_get()==0}
+pub(crate) unsafe fn select_system(){
+ let slot=font_apply::pending_get();if slot!=0{font_apply::cancel_pending(slot);}
+ st_wr!(FL_SEL,0);st_wr!(FL_DELCONF,0);font_apply::request_revert();st_wr!(FL_ROWS_REQ,1);
+}
+pub(crate) unsafe fn delete_mode()->bool{FL_DELETE_MODE!=0}
+pub(crate) unsafe fn toggle_delete_mode(){FL_DELETE_MODE^=1;st_wr!(FL_DELCONF,0);st_wr!(FL_ROWS_REQ,1);}
+#[cfg(feature="n67")]
+unsafe fn queue_load(){
+ if FL_QUEUE_LOADED{return;}FL_QUEUE_LOADED=true;
+ let fd=fw_api::open(FL_QUEUE_FILE.as_ptr(),fw_api::oflag::RDONLY,0);
+ if fd>=0{let mut b=[0u8;1];if fw_api::read(fd,b.as_mut_ptr(),1)==1{FL_QUEUE_MASK=b[0] as u32;}fw_api::close(fd);}
+}
+#[cfg(feature="n67")]
+unsafe fn queue_save(mask:u32)->bool{
+ let fd=fw_api::open(FL_QUEUE_FILE.as_ptr(),fw_api::oflag::WRONLY|fw_api::oflag::CREAT,0o640);if fd<0{return false;}
+ let b=[mask as u8];let ok=fw_api::write(fd,b.as_ptr(),1)==1;let closed=fw_api::close(fd)==0;
+ if ok&&closed{FL_QUEUE_MASK=mask;true}else{false}
+}
+#[cfg(feature="n67")]
+unsafe fn queued(slot:u32)->bool{queue_load();slot>=1&&slot<=8&&(FL_QUEUE_MASK&(1<<(slot-1)))!=0}
+#[cfg(feature="n67")]
+unsafe fn queued_tick(){
+ queue_load();if st_rd!(FL_DEL_ST)!=0{return;}
+ for slot in 1..=8{
+  let bit=1<<(slot-1);
+  if FL_QUEUE_MASK&bit!=0 && FL_QUEUE_FAILED&bit==0 && !font_apply::slot_cached(slot) && font_apply::live_get()!=slot && font_apply::pending_get()!=slot{
+   st_wr!(FL_DEL,slot);st_wr!(FL_DEL_ST,1);return;
+  }
+ }
+}
 // ---------------------------------------------------------------------------
 // 清单: 读 / 改 / 写(只碰 index.txt 一个文件, 绝不遍历目录)
 // ---------------------------------------------------------------------------
@@ -256,34 +295,30 @@ unsafe fn slot_file_ok(slot: u32) -> bool {
 //   3. 定时器侧(删除流水线)一概不直接碰对象, 只置 render_req(FONT_PID as usize)。
 // ---------------------------------------------------------------------------
 
-/// 清单里有几个自定义字体(不含固定在第一行的官方字体)
+/// 清单里有几个字体(即页面上几条条目)
 pub(crate) unsafe fn entry_count() -> u32 { st_rd!(FL_N) }
 
-/// 第 e 个界面条目的槽号。第 0 行是官方字体，没有文件槽位。
+/// 第 e 个条目的槽号(越界返回 0)
 pub(crate) unsafe fn entry_slot(e: u32) -> u32 {
-    if e == 0 { return 0; }
-    let i = (e - 1) as usize;
+    let i = e as usize;
     if i >= st_rd!(FL_N) as usize { return 0; }
     st_rd!(FL_ID[i])
 }
 
 /// 第 e 个条目是不是当前勾选的那一个(界面画勾用)。
-/// 官方字体占第 0 行；自定义字体按 live + pending 判断，切换等待期间立即显示勾选。
+/// 判据两处: **live**(真正在用的) + **pending**(刚点下、等下一拍落地的)。
+/// 两者都要看 —— commit 不在点击回调里做, 点完到落地之间有几十毫秒,
+/// 这段时间勾选必须已经跟过去了(否则看起来像没点上)。
 pub(crate) unsafe fn entry_selected(e: u32) -> bool {
-    if e == 0 {
-        return st_rd!(FL_SEL) == FL_OFFICIAL_PENDING
-            || (st_rd!(FL_SEL) != FL_OFFICIAL_PENDING
-                && font_apply::live_get() == 0 && font_apply::pending_get() == 0);
-    }
-    if st_rd!(FL_SEL) == FL_OFFICIAL_PENDING { return false; }
     let s = entry_slot(e);
     if s == 0 { return false; }
     s == font_apply::live_get() || s == font_apply::pending_get()
 }
 
-/// 页面始终先显示官方字体，其后才是清单里的自定义字体。
+/// 本页要建几条行(= 清单里的字体数, 最多 FL_MAX)
 pub(crate) unsafe fn entry_shown() -> u32 {
-    entry_count().min(FL_MAX as u32) + 1
+    let n = entry_count();
+    if n > FL_MAX as u32 { FL_MAX as u32 } else { n }
 }
 
 /// 填条目行的两排文本: 主 = 字体短名(确认态则是"再点一次删除 X"), 副 = 槽位与在用状态。
@@ -326,16 +361,27 @@ pub(crate) unsafe fn lines_fill() {
             w.s("槽位 ".as_bytes());
             w.n(slot);
         }
+        #[cfg(feature="n67")]
+        if queued(slot){w=W::new(sp,32);w.s("待删除，重启后生效".as_bytes());}
+        if delete_mode(){
+            #[cfg(feature="n67")]
+            if !queued(slot){w=W::new(sp,32);w.s("点击确认删除".as_bytes());}
+        }
         // 提示行(只在挂着的那几拍显示, 到 FL_MSG_HOLD 自动清)。共用同一个位, 一种结局一句话:
         //   3 = "已选择, 退出应用后生效"(点选切换要等退场后落地, 界面上得说清
         //       为什么勾了却不马上换)
         //   4 = 删除时清单没写进去  5 = 字体文件缺失  6 = 弹框没建出来(带分级码)
         if st_rd!(FL_MSG) != 0 && row == 0 {
+            #[cfg(feature="n67")]
+            { w = W::new(sp, 32); }
             if st_rd!(FL_MSG) == 3 {
                 // 注意长度: FL_SUBS 每行只有 32 字节, 这句(含前导空格)28 字节, 不截断。
                 // 写超了会被 W 截断成非法 UTF-8(半个汉字), 界面直接出乱码 ——
                 // 这句从"退出应用后生效并自动补写"压到现在的长度就是为了避开它。
+                #[cfg(not(feature="n67"))]
                 w.s("  已选择, 退出后生效".as_bytes());
+                #[cfg(feature="n67")]
+                w.s("已选择，正在应用".as_bytes());
             } else if st_rd!(FL_MSG) == 4 {
                 w.s("  删除失败, 清单写入未成功".as_bytes());
             } else if st_rd!(FL_MSG) == 5 {
@@ -344,6 +390,12 @@ pub(crate) unsafe fn lines_fill() {
                 w.s("  弹框创建失败(".as_bytes());
                 w.n(st_rd!(FL_MSG_W));
                 w.s(")".as_bytes());
+            } else if st_rd!(FL_MSG) == 7 {
+                w.s("字体格式错误".as_bytes());
+            } else if st_rd!(FL_MSG) == 8 {
+                w.s("已标记，重启后删除".as_bytes());
+            } else if st_rd!(FL_MSG) == 9 {
+                w.s("删除失败，请重试".as_bytes());
             }
         }
         w.end();
@@ -351,28 +403,14 @@ pub(crate) unsafe fn lines_fill() {
     }
 }
 
-/// 第 row 行的主标签指针；第 0 行固定为官方字体。
+/// 第 row 行的主标签指针
 pub(crate) unsafe fn line_primary(row: usize) -> *const u8 {
-    if row == 0 {
-        "官方字体\0".as_bytes().as_ptr()
-    } else {
-        core::ptr::addr_of!(FL_LINES[row - 1]) as *const u8
-    }
+    core::ptr::addr_of!(FL_LINES[row]) as *const u8
 }
 
 /// 第 row 行的副标签指针(非 NULL => 行是双排, 与表盘页"名称 + ID"同形)
 pub(crate) unsafe fn line_secondary(row: usize) -> *const u8 {
-    if row == 0 {
-        if st_rd!(FL_SEL) == FL_OFFICIAL_PENDING {
-            "已选择，退出后生效\0".as_bytes().as_ptr()
-        } else if entry_selected(0) {
-            "使用中\0".as_bytes().as_ptr()
-        } else {
-            "系统默认\0".as_bytes().as_ptr()
-        }
-    } else {
-        core::ptr::addr_of!(FL_SUBS[row - 1]) as *const u8
-    }
+    core::ptr::addr_of!(FL_SUBS[row]) as *const u8
 }
 
 /// render 建完行之后把行句柄数组交给本模块(原地刷新要用)。
@@ -400,7 +438,9 @@ unsafe fn apply_checkboxes(rows: *mut u32, base: usize, n: usize) {
         if op != 0 {
             // 本页只有一屏, 第 i 行就是第 i 个条目
             let sel = if entry_selected(i as u32) { 1u8 } else { 0u8 };
-            upd(op, fw_api::NONE_PTR, line_primary(i), line_secondary(i), 0, sel);
+            upd(op, fw_api::NONE_PTR,
+                core::ptr::addr_of!(FL_LINES[i]) as *const u8,
+                core::ptr::addr_of!(FL_SUBS[i]) as *const u8, 0, sel);
         }
         i += 1;
     }
@@ -471,27 +511,28 @@ pub(crate) unsafe fn popup_reset() { confirm_pop::reset(confirm_pop::SLOT_FONT);
 
 /// 点第 row 行 —— 界面槽位在 page.rs 里映射过来
 pub(crate) unsafe fn click_row(row: usize) {
-    if row > FL_MAX { return; }
+    if row >= FL_MAX { return; }
+    let slot=entry_slot(row as u32);
+    #[cfg(feature="n67")]
+    if queued(slot){st_wr!(FL_MSG,8);st_wr!(FL_MSG_AT,st_rd!(FL_TICKS));click_feedback();return;}
+    if delete_mode(){if slot!=0{popup_ask(slot);}return;}
     click_entry(row as u32);
 }
 
-/// 点某一条目。官方字体只记录恢复请求；自定义字体保留切换与两步删除交互。
-/// 本函数运行在固件事件派发上下文，只改状态并刷新行，实际字体操作由 tick 延后执行。
+/// 点某一条目。语义(与 icon_apply::click_entry 同一套交互):
+///   未选中的条目 -> 切过去(commit + request, 与 0x30 门同一套);
+///   已选中的条目 -> 第一次点变成"再点一次删除 X", 第二次点走删除流水线;
+///   已在用中的那份(它就是 live) -> 只给提示("先切走")。在用的那份绝不删, 也不进入确认态。
+/// 判"能不能删"一律以 **live**(font_apply 的当前池位)为准, 不以界面勾选为准 ——
+/// 勾选在点完立刻跟上, 而 live 要等 0x30 那一套跑完才跟上, 这段时间里按勾选判
+/// 会把"其实还在用"的那份判成可删。request_delete 里还有第二道同样的门。
+///
+/// 重要: 本函数**在固件的事件派发上下文里**跑,
+/// 所以这里一概**不碰 LVGL 对象** —— 只改静态量, 把"界面要更新"记成 FL_ROWS_REQ,
+/// 由 font_list::tick 在"没有跑批在动"的那一拍排一次**整页重建**(不再原地 row_update)。
+/// (icon_apply 在点击回调里直接 refresh_rows 是因为它那边没有字体脸的回退扫描
+/// 0x0CA666D8; 字体行有, 就是那条崩溃轴, 不能照抄这一条。)
 unsafe fn click_entry(e: u32) {
-    if e == 0 {
-        st_wr!(FL_DELCONF, 0);
-        st_wr!(FL_MSG, 0);
-        if entry_selected(0) { click_feedback(); return; }
-        if font_apply::busy() || font_apply::revert_busy() != 0 {
-            click_feedback();
-            return;
-        }
-        let pending = font_apply::pending_get();
-        if pending != 0 { font_apply::cancel_pending(pending); }
-        st_wr!(FL_SEL, FL_OFFICIAL_PENDING);
-        click_feedback();
-        return;
-    }
     let slot = entry_slot(e);
     if slot == 0 { return; }
     // 已选中的(在用中的那份永远算已选中): 两步删除的确认态(与图标页同款)。
@@ -520,7 +561,12 @@ unsafe fn click_entry(e: u32) {
     // "为什么勾了却不马上换"(提示行 3)。
     if font_apply::busy() { click_feedback(); return; }   // 上一次还在跑: 不做半途切换
     st_wr!(FL_SEL, slot);                              // 勾选立刻跟过去(原地刷新即可)
+    #[cfg(not(feature="n67"))]
     font_apply::set_pending(slot);
+    #[cfg(feature="n67")]
+    if !font_apply::set_pending(slot) {
+        st_wr!(FL_SEL, 0);st_wr!(FL_MSG, 7);st_wr!(FL_MSG_AT, st_rd!(FL_TICKS));click_feedback();return;
+    }
     st_wr!(FL_MSG, 3);
     st_wr!(FL_MSG_AT, st_rd!(FL_TICKS));
     click_feedback();
@@ -556,8 +602,19 @@ pub(crate) unsafe fn request_delete(slot: u32) {
         return;
     }
     st_wr!(FL_DELCONF, 0);
+    #[cfg(feature="n67")]
+    {
+        queue_load();let bit=1<<(slot-1);
+        if !queue_save(FL_QUEUE_MASK|bit){st_wr!(FL_MSG,9);st_wr!(FL_MSG_AT,st_rd!(FL_TICKS));click_feedback();return;}
+        FL_QUEUE_FAILED&=!bit;
+    }
     if st_rd!(FL_SEL) == slot { st_wr!(FL_SEL, 0); }
     font_apply::cancel_pending(slot);
+    #[cfg(feature="n67")]
+    if font_apply::slot_cached(slot){
+        if slot==font_apply::live_get(){font_apply::request_revert();}
+        st_wr!(FL_MSG,8);st_wr!(FL_MSG_AT,st_rd!(FL_TICKS));click_feedback();return;
+    }
     st_wr!(FL_DEL, slot);
     // 在用中的那份: 先把样式写回系统字体(face 换回开机原字, 我们的文件
     // 不再被引用), 之后才允许删文件 —— "face 按需回读文件"红线由恢复步骤解除。
@@ -586,10 +643,13 @@ unsafe fn delete_tick() {
         }
         1 => {
             refresh();                             // 以磁盘上的清单为准(投递包可能刚改过)
+            FL_DELETE_IDS=FL_ID;FL_DELETE_NAMES=FL_NAMES;FL_DELETE_N=FL_N;
             fl_drop(st_rd!(FL_DEL));
             if !fl_write() {
                 st_wr!(FL_LOADED, 0);              // 内存清单作废, 下次重读磁盘
                 st_wr!(FL_DEL_ST, 0);
+                #[cfg(feature="n67")]
+                {FL_QUEUE_FAILED|=1<<(st_rd!(FL_DEL)-1);}
                 st_wr!(FL_DEL, 0);
                 st_wr!(FL_MSG, 4);                 // 失败必须可见, 不能无声吞掉
                 st_wr!(FL_MSG_AT, st_rd!(FL_TICKS));
@@ -605,13 +665,21 @@ unsafe fn delete_tick() {
             if st_rd!(FL_DEL_K) == 0 {
                 let mut p = [0u8; 32];
                 slot_path(p.as_mut_ptr(), st_rd!(FL_DEL));
-                fw_api::fs_remove(p.as_ptr());
+                let rc=fw_api::fs_remove(p.as_ptr());
+                if rc!=0 && slot_file_ok(st_rd!(FL_DEL)){
+                    FL_ID=FL_DELETE_IDS;FL_NAMES=FL_DELETE_NAMES;FL_N=FL_DELETE_N;fl_write();
+                    #[cfg(feature="n67")]
+                    {FL_QUEUE_FAILED|=1<<(st_rd!(FL_DEL)-1);}
+                    st_wr!(FL_DEL_ST,0);st_wr!(FL_DEL,0);st_wr!(FL_MSG,9);st_wr!(FL_MSG_AT,st_rd!(FL_TICKS));st_wr!(FL_ROWS_REQ,1);return;
+                }
                 st_wr!(FL_DEL_K, 1);
                 return;
             }
             if st_rd!(FL_DEL) == font_apply::live_get() {
                 font_apply::clear_live();      // 在用的那份删掉了, 池位归零
             }
+            #[cfg(feature="n67")]
+            {queue_save(FL_QUEUE_MASK&!(1<<(st_rd!(FL_DEL)-1)));}
             st_wr!(FL_DEL_ST, 0);
             st_wr!(FL_DEL, 0);
             st_wr!(FL_ROWS_REQ, 1);
@@ -632,24 +700,15 @@ pub(crate) unsafe fn mark_page_dirty() {
 /// 有没有我们这一路的活在推进(供节拍自适应用): 待重画请求、删除流水线、挂着的提示行。
 pub(crate) unsafe fn pending() -> bool {
     st_rd!(FL_ROWS_REQ) != 0 || st_rd!(FL_DEL_ST) != 0 || st_rd!(FL_MSG) != 0
-        || st_rd!(FL_SEL) == FL_OFFICIAL_PENDING
 }
 
 /// 50ms UI tick 里调用: 推进删除流水线 + 到点自动清掉那句提示 + 消费"界面要更新"请求。
 /// 请求的消费方式是**排一次整页重建**, 不是原地改行(理由见下面 FL_ROWS_REQ 那段)。
 /// 与字体应用(font_apply::tick 分拍建脸)是两条独立的事, 各走各的状态位。
 pub(crate) unsafe fn tick() {
+    #[cfg(feature="n67")]
+    queued_tick();
     st_wr!(FL_TICKS, st_rd!(FL_TICKS).wrapping_add(1));
-    // 官方字体与自定义切换一样，等 Chaos 退出前台后再恢复，避免在页面事件链里换脸。
-    if st_rd!(FL_SEL) == FL_OFFICIAL_PENDING && st_rd!(APP_FG) == 0
-        && !font_apply::busy() && font_apply::revert_busy() == 0
-        && fw_api::screen_is_on()
-    {
-        st_wr!(FL_SEL, 0);
-        font_hot::revert_all();
-        font_apply::clear_live();
-        font_apply::request_revert();
-    }
     // 0) 删除确认框: 弹框在点击回调里当场做, 这里只剩**兜底销毁** ——
     //    勾/叉那一下没过关(页已经把框带走/句柄对不上)才转到这里, 安静拍补一刀。
     if page_is_live(FONT_PID as usize) && window_is_quiet()

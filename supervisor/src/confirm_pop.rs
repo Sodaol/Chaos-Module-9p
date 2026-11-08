@@ -56,7 +56,12 @@ unsafe fn root_of(slot: usize) -> u32 {
 /// 框还在不在: 页根子对象表为主, 单例字为辅。
 unsafe fn alive(slot: usize, o: u32) -> bool {
     if o == 0 { return false; }
-    fw_api::obj_is_child_of(root_of(slot), o) || rd32(fw_api::MSGBOX_SINGLETON as *const u32) == o
+    {
+        #[cfg(feature="n67")]
+        {fw_api::obj_is_child_of(root_of(slot),o)}
+        #[cfg(not(feature="n67"))]
+        {fw_api::obj_is_child_of(root_of(slot), o) || rd32(fw_api::MSGBOX_SINGLETON as *const u32) == o}
+    }
 }
 
 /// 弹"删除「名字」?"的确认框: 黑底白字 + 底部灰叉/蓝勾, 与"确认重启？"同款视觉。
@@ -119,10 +124,13 @@ pub(crate) unsafe fn click(slot: usize, event: u32) -> u32 {
         st_wr!(CP_ST[slot], 3);
         return 2;
     }
-    fw_api::obj_delete(o);
+    #[cfg(feature="n67")]
+    { st_wr!(CP_ST[slot],3); return 2; }
+    #[cfg(not(feature="n67"))]
+    {fw_api::obj_delete(o);
     st_wr!(CP_ST[slot], 0);
     st_wr!(CP_OBJ[slot], 0);
-    1
+    1}
 }
 
 /// 兜底销毁: 调用方在自己的安静门里每拍试一次, 直到删掉或确认对象已经不在了。

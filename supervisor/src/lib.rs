@@ -2,48 +2,113 @@
 //! 关键：register_app 内部 malloc/memset 是 thunk→段B(LVGL)，需 fops.write 上下文。
 
 #![no_std]
-#![feature(arm_target_feature)]
 #![no_main]
 #![allow(static_mut_refs)]
 
+#[cfg(feature="n67")]
+mod files;
+#[cfg(feature="n67")]
+#[path="n67/ui_activity.rs"]
+mod ui_activity;
+#[cfg(feature="n67")]
+#[path="n67/launcher_entry.rs"]
+mod launcher_entry;
+#[cfg(feature="n67")]
+#[path="n67/beautify_restore.rs"]
+mod beautify_restore;
+#[cfg(feature="n67")]
+#[path="n67/desktop_scale.rs"]
+mod desktop_scale;
+#[cfg(feature="n67")]
+#[path="n67/keyboard.rs"]
+mod keyboard;
+#[cfg(feature="n67")]
+#[path="n67/system_custom.rs"]
+mod system_custom;
+#[cfg(feature="n67")]
+#[path="n67/system_language.rs"]
+mod system_language;
+#[cfg(feature="n67")]
+use system_custom::{system_version,system_text,device_name,device_model};
 mod state;
 pub(crate) use state::*;
 
+#[cfg(not(feature = "n67"))]
 mod font_apply;
-mod beautify_restore;
+#[cfg(feature = "n67")]
+#[path = "n67/font_apply.rs"]
+mod font_apply;
 mod font_list;
+#[cfg(not(feature = "n67"))]
+mod font_hot;
+#[cfg(feature = "n67")]
+#[path = "n67/font_hot_checked.rs"]
 mod font_hot;
 mod icon_apply;
+#[cfg(not(feature = "n67"))]
 mod res_hook;
-mod time_set;
-mod desktop_scale;
-mod settings_entry;
-mod system_update_entry;
-mod launcher_entry;
-mod system_version;
-mod system_text;
-mod device_name;
-mod device_model;
-mod keyboard;
-mod appmgr;
-mod log;
-mod cacheclean;
+#[cfg(feature = "n67")]
+#[path = "n67/res_hook.rs"]
+mod res_hook;
 mod confirm_pop;
-#[allow(dead_code)]
-mod background_pixels;
-#[allow(dead_code)]
-mod background_scene;
-mod background_home;
-mod background_pages;
-mod background_surfaces;
-mod background_assets;
-mod blur_zone;
+#[cfg(feature="n67")]
+#[path="n67/log.rs"]
+mod log;
+#[cfg(feature="n67")]
+#[path="n67/extra_pages.rs"]
+mod extra_pages;
+#[cfg(feature="n67")]
+#[path="n67/time_set.rs"]
+mod time_set;
+#[cfg(feature="n67")]
+#[path="n67/datetime_pages.rs"]
+mod datetime_pages;
+#[cfg(feature="n67")]
+#[path="n67/notifications.rs"]
+mod notifications;
+#[cfg(feature="n67")]
+#[path="n67/app_manager.rs"]
+mod app_manager;
+#[cfg(feature="n67")]
+#[path="n67/app_metadata.rs"]
+mod app_metadata;
+#[cfg(feature="n67")]
+#[path="n67/native_entries.rs"]
+mod native_entries;
+#[cfg(feature="n67")]
+#[path="n67/delivery_compat.rs"]
+mod delivery_compat;
+#[cfg(feature="n67")]
+#[path="n67/gh225.rs"]
+mod gh225;
+#[cfg(feature="n67")]
+#[path="n67/backdrop_render.rs"]
+mod backdrop_render;
+#[cfg(feature="n67")]
+#[path="n67/background.rs"]
+mod background;
+#[cfg(feature="n67")]
+#[path="n67/shake_probe.rs"]
+mod shake_probe;
+#[cfg(feature="n67")]
+#[path="n67/accel_shake.rs"]
+mod accel_shake;
+#[cfg(feature="n67")]
+#[path="n67/swipe_vibration.rs"]
+mod swipe_vibration;
+#[cfg(feature="n67")]
+#[path="n67/diagnostics.rs"]
+mod diagnostics;
 
 mod text;
 mod explorer;
 mod watchface;
 mod page;
 mod ui;
+#[cfg(not(feature = "n67"))]
+mod ipc;
+#[cfg(feature = "n67")]
+#[path = "n67/ipc.rs"]
 mod ipc;
 pub(crate) use text::*;
 pub(crate) use explorer::*;
@@ -53,6 +118,10 @@ pub(crate) use ui::*;
 pub(crate) use ipc::*;
 
 // 已验证固件 API 封装层(新界面一律走这里, 不再写裸 transmute)
+#[cfg(not(feature = "n67"))]
+mod fw_api;
+#[cfg(feature = "n67")]
+#[path = "n67/fw_api.rs"]
 mod fw_api;
 #[macro_use]
 mod mem;
@@ -142,51 +211,6 @@ chaos_row_cb!(chaos_row_ev8, 8);
 chaos_row_cb!(chaos_row_ev9, 9);
 chaos_row_cb!(chaos_row_ev10, 10);   // slot10 = 返回行(表盘页/轮换页)
 chaos_row_cb!(chaos_row_ev11, 11);
-// 12..=51: 应用管理页的全量条目行(事件槽 = 条目下标 + 12; 0..11 是 ctx.rows
-// 顶部按钮/状态行, 条目复用会被派发成点按钮 —— 2026-10-15 修的槽位冲突)。
-// 这些槽位**不走 ctx.rows**(PAGES[pid].rows 只有 MAX_ROWS_PER_PAGE=12 个,
-// build_row 写它会被拒), 行句柄由 appmgr.rs 自管的 APP_ROWS 持有;
-// 槽号只进事件派发(chaos_row_dispatch -> AppMgrPage::on_click)。
-chaos_row_cb!(chaos_row_ev12, 12);
-chaos_row_cb!(chaos_row_ev13, 13);
-chaos_row_cb!(chaos_row_ev14, 14);
-chaos_row_cb!(chaos_row_ev15, 15);
-chaos_row_cb!(chaos_row_ev16, 16);
-chaos_row_cb!(chaos_row_ev17, 17);
-chaos_row_cb!(chaos_row_ev18, 18);
-chaos_row_cb!(chaos_row_ev19, 19);
-chaos_row_cb!(chaos_row_ev20, 20);
-chaos_row_cb!(chaos_row_ev21, 21);
-chaos_row_cb!(chaos_row_ev22, 22);
-chaos_row_cb!(chaos_row_ev23, 23);
-chaos_row_cb!(chaos_row_ev24, 24);
-chaos_row_cb!(chaos_row_ev25, 25);
-chaos_row_cb!(chaos_row_ev26, 26);
-chaos_row_cb!(chaos_row_ev27, 27);
-chaos_row_cb!(chaos_row_ev28, 28);
-chaos_row_cb!(chaos_row_ev29, 29);
-chaos_row_cb!(chaos_row_ev30, 30);
-chaos_row_cb!(chaos_row_ev31, 31);
-chaos_row_cb!(chaos_row_ev32, 32);
-chaos_row_cb!(chaos_row_ev33, 33);
-chaos_row_cb!(chaos_row_ev34, 34);
-chaos_row_cb!(chaos_row_ev35, 35);
-chaos_row_cb!(chaos_row_ev36, 36);
-chaos_row_cb!(chaos_row_ev37, 37);
-chaos_row_cb!(chaos_row_ev38, 38);
-chaos_row_cb!(chaos_row_ev39, 39);
-chaos_row_cb!(chaos_row_ev40, 40);
-chaos_row_cb!(chaos_row_ev41, 41);
-chaos_row_cb!(chaos_row_ev42, 42);
-chaos_row_cb!(chaos_row_ev43, 43);
-chaos_row_cb!(chaos_row_ev44, 44);
-chaos_row_cb!(chaos_row_ev45, 45);
-chaos_row_cb!(chaos_row_ev46, 46);
-chaos_row_cb!(chaos_row_ev47, 47);
-chaos_row_cb!(chaos_row_ev48, 48);
-chaos_row_cb!(chaos_row_ev49, 49);
-chaos_row_cb!(chaos_row_ev50, 50);
-chaos_row_cb!(chaos_row_ev51, 51);
 
 
 
@@ -203,6 +227,7 @@ chaos_row_cb!(chaos_row_ev51, 51);
 // register_driver 的四参(path, fops, mode, priv)是这套内核对**所有**设备驱动
 // 的通行入口约定, 0x1B6 = 0666 权限位 —— 固件自带模块全部这么传。
 #[no_mangle]
+#[cfg(not(feature = "n67"))]
 unsafe extern "C" fn chaos_ctor() {
     if st_rd!(CTOR_DONE) != 0 {
         return;
@@ -226,23 +251,13 @@ unsafe extern "C" fn chaos_ctor() {
     // 返回 0 才算注册成功, 与固件自带模块的"已注册"标志同一套语义
     if registered == 0 {
         st_wr!(DRIVER_ON, 1);
-        // 注入完成后立即启动模块维护定时器。此前定时器只在 Chaos 页面
-        // on_resume 时创建，导致已保存的背景/透明模式要打开一次 Chaos 才生效。
-        // 定时器回调会等待固件桌面对象树就绪，再消费 background.cfg 并刷新缓存；
-        // shake_arm 本身幂等，页面首次打开时不会重复创建定时器。
-        // 这里只建立延后执行的维护定时器；真正的订阅、hook 和设置应用
-        // 由定时器在启动窗口结束后统一开始。
-        crate::watchface::maintenance_arm();
-        // 定时器句柄: 0 说明 timer_create 没成, 那样 chaos_shake_timer 永远不会被调,
-        // 依赖它的一切(页面 tick / desktop_scale)都不会跑。
-        crate::log::kv("timer h ", st_rd!(SHAKE_TIMER));
-        crate::log::line("模块加载: /dev/chaos 注册成功");
     }
 }
 
 // 析构必须幂等: Vela 的 insmod 会对 fini_array 立即调一次, 卸载时再调一次。
 // 只有真正注册过(DRIVER_ON==1)才做反注册并清标志。
 #[no_mangle]
+#[cfg(not(feature = "n67"))]
 unsafe extern "C" fn chaos_dtor() {
     if st_rd!(DRIVER_ON) != 1 {
         return;
@@ -256,6 +271,7 @@ unsafe extern "C" fn chaos_dtor() {
 
 
 #[no_mangle]
+#[cfg(not(feature = "n67"))]
 pub extern "C" fn module_main() -> i32 {
     unsafe { chaos_ctor(); }
     0

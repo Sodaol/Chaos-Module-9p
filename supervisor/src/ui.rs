@@ -26,6 +26,8 @@ pub(crate) unsafe extern "C" fn chaos_on_create(_page: u32, _p1: u32, _p2: u32) 
     if _page == 0 { return 0; }
     let pid = rd16((_page + 0x14) as *const u16) as usize;
     if pid <= MAX_PID {
+        #[cfg(feature="n67")]
+        crate::extra_pages::enter(pid);
         // 旧对象树的句柄在这里统一作废, 且**只丢句柄不删对象**: 固件把新页交给我们时,
         // 上一个实例的对象树已经随旧页销毁了。反过来不能在 on_destroy 里清 —— 息屏时固件
         // 也会回调 on_destroy, 但对象树和页面都还在, 清了会让信息页的实时刷新永久停摆。
@@ -38,7 +40,7 @@ pub(crate) unsafe extern "C" fn chaos_on_create(_page: u32, _p1: u32, _p2: u32) 
             while q < fw_api::MAX_ROWS_PER_PAGE { write_volatile(rws.add(q), 0); q += 1; }
         }
         PAGES[pid].desc = _page;
-        PAGES[pid].root = _p1;
+        PAGES[pid].root = if cfg!(feature="n67") { let r=rd32((_page+fw_api::DESC_ROOT) as *const u32); if safe_ptr(r){r}else{_p1} } else {_p1};
         PAGES[pid].built = 0;
         // 页5/页6 的确认框挂在**页根**上(状态机见 confirm_pop.rs), 新实例 = 旧根连同旧框已被
         // 固件销毁: 框句柄状态必须在这里归零, 否则后面的删除会打到复用同一块内存的新对象上。
@@ -46,7 +48,11 @@ pub(crate) unsafe extern "C" fn chaos_on_create(_page: u32, _p1: u32, _p2: u32) 
         crate::icon_apply::popup_forget(pid);
         st_wr!(HEAL_TRYS, 0);
     st_wr!(APP_FG, 1);   // 我们的应用在前台(逐对象补写那类跑批按这道门过滤)
-
+        if pid == 7 {
+            // 查看页每次进入 = 新文件: 块归零 + 强制重读(VIEW_PATH 已由目录页写好)
+            st_wr!(VIEW_BLK, 0);
+            st_wr!(VIEW_LOADED, 0);
+        }
     }
     0
 }
@@ -63,7 +69,7 @@ pub(crate) unsafe fn page_rows_ptr(pid: usize) -> *mut u32 {
 pub(crate) unsafe fn page_is_live(pid: usize) -> bool {
     if pid > MAX_PID { return false; }
     let dsc = PAGES[pid].desc;
-    dsc != 0 && rd32((dsc + 0x30) as *const u32) != 0
+    dsc != 0 && rd32((dsc + fw_api::DESC_ROOT) as *const u32) != 0
 }
 
 // 写一段不带结尾 0 的字面量并补 0
@@ -202,12 +208,12 @@ pub(crate) unsafe fn rows_layout(pid: usize) {
         if (win + 1) * 8 < cnt { slots[n] = 9; n += 1; }
         slots[n] = 10; n += 1;
     } else {
-        // 目录页: 0..7=条目, 8=更多, 9=返回/上级
-        // (2026-10-15) slot10 缓存清理入口退役: 入口已提升到主页行7
+        // 目录页: 0..7=条目, 8=更多, 9=返回/上级, 10=缓存清理入口(仅根目录页 pid1 建这一行)
         while i < ent { slots[n] = i; n += 1; i += 1; }
         if ent == 0 { slots[n] = 0; n += 1; }
         if (win + 1) * 8 < cnt { slots[n] = 8; n += 1; }
         slots[n] = 9; n += 1;
+        if pid == 1 { slots[n] = 10; n += 1; }
     }
     rows_sync(pid, &slots[..n]);
 }
@@ -319,6 +325,8 @@ pub(crate) unsafe fn chaos_row_dispatch(idx: usize, event: u32) -> u32 {
         page_ref.on_switch(idx);
     } else {
         if code != fw_api::ev::CLICKED { return 0; }
+        #[cfg(feature="n67")]
+        if pid != crate::extra_pages::LOG { crate::log::kv("操作 页×100+行", (pid * 100 + idx) as u32); }
         page_ref.on_click(idx);
     }
     0
@@ -338,22 +346,7 @@ pub(crate) unsafe fn row_ev_fn(i: usize) -> u32 {
         9 => cb_u32(chaos_row_ev9),
         // 注意: 每个槽位都要有自己的回调; 用 catch-all 兜住 slot10/11 会把"返回"当"更多"派发
         10 => cb_u32(chaos_row_ev10),
-        // 12..=51 = 应用管理页全量条目行(事件槽 = 条目下标 + 12, 见 lib.rs chaos_row_cb 注释)
-        11 => cb_u32(chaos_row_ev11),
-        12 => cb_u32(chaos_row_ev12), 13 => cb_u32(chaos_row_ev13), 14 => cb_u32(chaos_row_ev14),
-        15 => cb_u32(chaos_row_ev15), 16 => cb_u32(chaos_row_ev16), 17 => cb_u32(chaos_row_ev17),
-        18 => cb_u32(chaos_row_ev18), 19 => cb_u32(chaos_row_ev19), 20 => cb_u32(chaos_row_ev20),
-        21 => cb_u32(chaos_row_ev21), 22 => cb_u32(chaos_row_ev22), 23 => cb_u32(chaos_row_ev23),
-        24 => cb_u32(chaos_row_ev24), 25 => cb_u32(chaos_row_ev25), 26 => cb_u32(chaos_row_ev26),
-        27 => cb_u32(chaos_row_ev27), 28 => cb_u32(chaos_row_ev28), 29 => cb_u32(chaos_row_ev29),
-        30 => cb_u32(chaos_row_ev30), 31 => cb_u32(chaos_row_ev31), 32 => cb_u32(chaos_row_ev32),
-        33 => cb_u32(chaos_row_ev33), 34 => cb_u32(chaos_row_ev34), 35 => cb_u32(chaos_row_ev35),
-        36 => cb_u32(chaos_row_ev36), 37 => cb_u32(chaos_row_ev37), 38 => cb_u32(chaos_row_ev38),
-        39 => cb_u32(chaos_row_ev39), 40 => cb_u32(chaos_row_ev40), 41 => cb_u32(chaos_row_ev41),
-        42 => cb_u32(chaos_row_ev42), 43 => cb_u32(chaos_row_ev43), 44 => cb_u32(chaos_row_ev44),
-        45 => cb_u32(chaos_row_ev45), 46 => cb_u32(chaos_row_ev46), 47 => cb_u32(chaos_row_ev47),
-        48 => cb_u32(chaos_row_ev48), 49 => cb_u32(chaos_row_ev49), 50 => cb_u32(chaos_row_ev50),
-        _ => cb_u32(chaos_row_ev51),
+        _ => cb_u32(chaos_row_ev11),
     }
 }
 
@@ -373,11 +366,17 @@ pub(crate) unsafe extern "C" fn chaos_on_resume(page: u32) -> i32 {
     if pid > MAX_PID { pid = st_rd!(FG_PAGE) as usize; }
     if pid > MAX_PID { return 0; }
     st_wr!(FG_PAGE, pid as u32);
+    st_wr!(APP_FG, 1);
     shake_arm();   // 首次进入(UI线程)订阅摇一摇+建timer, 幂等
-    // 页3 原来是文件管理的最后一级，现在让给日期第二步(月/日)。
-    // 这一格以前是 `if pid == 3 { DIR_DEPTH…; load_dir(); }`，目录页退役之后必须跟着删:
-    // 留着的话进日期第二屏就会拿从没填过的 PATH_STACK 跑 opendir/readdir
-    // (页2 当年占目录位时就是这么一点进去就崩)。判据要按"现在还有哪一页是目录页"写，不能按区间写。
+    #[cfg(not(feature="n67"))]
+    if pid >= 1 && pid <= 4 {
+        // 目录页: depth=pid-1, 恢复该级窗位, 重新加载目录(数据永远新鲜)。
+        // 目录页对应 pid 1-4: 更深的层级没有分配 page_id, 这里的上界跟着那条分配走
+        st_wr!(DIR_DEPTH, (pid - 1) as u32);
+        let w = read_volatile((core::ptr::addr_of!(DIR_WIN_SAVE) as *const u32).add(pid - 1));
+        st_wr!(DIR_WIN, w);
+        load_dir();
+    }
     if pid == 8 || pid == 9 {
         // 两页各自独立过滤: 表盘页看 WF_SHOW_BUILTIN, 轮换页看 WF_SEL_BUILTIN
         let f = if pid == 8 {
@@ -391,10 +390,6 @@ pub(crate) unsafe extern "C" fn chaos_on_resume(page: u32) -> i32 {
         // 桌面图标页(系统美化的二级页): 进页重读图标包清单 —— 刚侧载投递完的包
         // 不用重启就该出现在列表里。列表行的原地刷新在 render 里做。
         icon_apply::refresh_packs();
-    }
-    if pid == 1 {
-        // 应用管理页: 进页重读注册表(改写后的状态每次进入都取磁盘真值)
-        crate::appmgr::invalidate();
     }
     if pid == 5 {
         // 更换字体页(系统美化的二级页): 进页重读字体清单, 同理 —— 刚投递进去的字体
@@ -431,6 +426,8 @@ pub(crate) unsafe extern "C" fn chaos_on_ui_destroy(page: u32) -> i32 {
     if page == 0 { return 0; }
     let pid = rd16((page + 0x14) as *const u16) as usize;
     if pid > MAX_PID { return 0; }
+    #[cfg(feature="n67")]
+    fw_api::forget_tree(PAGES[pid].root);
     PAGES[pid].desc = 0;
     PAGES[pid].root = 0;
     PAGES[pid].content = 0;

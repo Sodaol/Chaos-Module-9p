@@ -1,0 +1,5 @@
+# N67 3.1.190 搖一搖接入核對
+
+原生subscribe_uorb 0xc368100透過0xc36811e呼叫0xc46a00a，literal 0xc368148為0x2c67c708；該metadata的name指向quick_guesture，payload size為16。
+原生topic_quick_guesture_handler 0xc36a8f4以event+4比對metadata，讀event+0x18及event+0x1c，拷貝最多16bytes，從payload+8讀u16；0x1c2為搖一搖、0x1c3為抬腕。
+原生watchface_config_on_watchface_visible_changed 0xc453a74透過manager全域0x200cacd0，把is_aod寫入manager+0x6c、visible寫入+0x6d。新增測試透過獨立原生服務double執行真實搬移後的Rust開關、回調與切換流程；真實感測器與broker仍須實機確認。

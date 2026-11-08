@@ -1,0 +1,461 @@
+-- Shared native-app installer v5. Firmware ABI: N67 CN 3.1.190 only.
+
+-- One coroutine owns all shell/memory operations. No injection on face load.
+
+local lvgl = require('lvgl')
+
+local MODULE_SIZE = @@SIZE@@
+
+local MODULE_BIN = '@@MODULE_PAYLOAD@@'
+
+@@OFFSETS@@
+
+local RES = @@RES_LAYOUT@@
+
+local APP_ID, PAGE_ID = @@APP_ID@@, @@PAGE_ID@@
+
+local TITLE, RELEASE = @@TITLE@@, @@RELEASE@@
+
+local MALLOC = 0x0C0F1171
+
+local EXEC, BLOCK, MODULE_BLOCK, REG_TIMER, BRIDGE = 0,0,0,nil,0
+
+local module_ready, block_ready, armed = false,false,false
+
+local owners, ranges, work, shell_count = {},{},nil,0
+
+local batch, last_phase = false,'就绪'
+
+local LOG, MARK, DUMP = @@LOG@@,@@MARK@@,@@DUMP@@
+
+local function word(s,o) return string.unpack('<I4',s,o+1) end
+
+local function hx(n) return string.format('0x%08x',n) end
+
+local function heap(p,n) return p and p%4==0 and p>=0x3C000020 and p+(n or 4)<0x3EFFFFF8 end
+
+-- Match the registrar's bt_valid_ptr: native registry/desktop/timer objects
+-- can also live in SRAM. Allocation ownership still requires heap().
+local function runtime_ptr(p,n)
+  return heap(p,n) or (p and p%4==0 and p>=0x20000000 and p+(n or 4)<=0x20100000)
+end
+
+local function keep(s) owners[#owners+1]=s;return s end
+
+local function log(s)
+
+  local f=io.open(LOG,'ab');if f then f:write(s..'\n');f:close() end
+
+end
+
+local function mark(s)
+
+  last_phase=s;local f=io.open(MARK,'wb');if f then f:write(s);f:close() end
+
+  log(string.format('[%d] %s',shell_count,s))
+
+end
+
+local function yield_step() coroutine.yield() end
+
+local function shell(cmd)
+
+  shell_count=shell_count+1
+
+  local ok,kind,code=os.execute(cmd)
+
+  assert(ok==true and kind=='exit' and code==0,
+
+    'shell '..tostring(ok)..'/'..tostring(kind)..'/'..tostring(code)..' '..cmd:sub(1,80))
+  yield_step()
+
+end
+
+local function own(p,n) assert(heap(p,n));ranges[#ranges+1]={p,p+n} end
+
+local function write32(p,v)
+
+  local allowed=false
+
+  for _,r in ipairs(ranges) do if p>=r[1] and p+4<=r[2] then allowed=true;break end end
+
+  assert(allowed and p%4==0,'unowned write '..hx(p))
+
+  shell(string.format('mw %s=%08x',hx(p),v))
+
+end
+
+local function read(p,n)
+
+  assert(n>0 and n<=128 and (heap(p&~3,n+4) or (p>=0x20000000 and p+n<=0x20100000)), 'read range')
+
+  shell(string.format('xd %s %d > %s',hx(p),n,DUMP))
+
+  local f=assert(io.open(DUMP,'rb'),'memory dump missing');local t=f:read('*a');f:close()
+
+  local out={}
+
+  for line in t:gmatch('[^\r\n]+') do
+
+    local bytes=line:match('^%x%x%x%x:%s(.*)$')
+
+    if bytes then for h in bytes:sub(1,48):gmatch('(%x%x)%s') do
+
+      out[#out+1]=string.char(tonumber(h,16));if #out==n then return table.concat(out) end
+
+    end end
+
+  end
+
+  error('short memory dump '..hx(p))
+
+end
+
+local function owned_string(s)
+
+  assert(#s>=128,'long string required')
+
+  local p=tonumber(string.format('%p',s):match('0x(%x+)'),16)
+
+  assert(heap(p,#s+16),'string address')
+
+  local h=read(p,16);assert(h:byte(5)==0x14 and word(h,12)==#s,'Lua string ABI')
+
+  return p+16,s
+
+end
+
+local function writes(parts)
+
+  -- The proven NSH maximum is 48 writes per command, with a UI yield after each.
+
+  local n=batch and 48 or 1
+
+  for start=1,#parts,n do
+
+    local chunk={};for i=start,math.min(start+n-1,#parts) do chunk[#chunk+1]=parts[i] end
+
+    shell(table.concat(chunk,';'))
+
+  end
+
+end
+
+-- The old firmware memcpy veneer moved in 3.1.190. Copy through the already
+-- probed NSH memory-write path instead of calling an unverified code address.
+local function copy_string(dst,s)
+  local padded=(#s+3)&~3
+  local owned=false
+  for _,r in ipairs(ranges) do if dst>=r[1] and dst+padded<=r[2] then owned=true;break end end
+  assert(owned and dst%4==0,'unowned copy '..hx(dst))
+  local parts={}
+  for off=0,#s-1,4 do
+    local chunk=s:sub(off+1,off+4)
+    if #chunk<4 then chunk=chunk..string.rep('\0',4-#chunk) end
+    parts[#parts+1]=string.format('mw %s=%08x',hx(dst+off),word(chunk,0))
+    if #parts==48 then shell(table.concat(parts,';'));parts={} end
+  end
+  if #parts>0 then shell(table.concat(parts,';')) end
+end
+
+local function sync_code(p,n)
+
+  for _,reg in ipairs({0x07FFC080,0x07FFA018}) do
+
+    local base=reg==0x07FFC080 and p or p-0x20000000
+
+    local parts={};for line=base&~31,(base+n-1)&~31,32 do
+
+      parts[#parts+1]=string.format('mw %s=%08x',hx(reg),line)
+
+    end
+
+    writes(parts)
+
+  end
+
+end
+
+local TRAMP = (('70b50ff27c0404f1005482b06669009625686068a168e2682369a84702b0a06145f23900c4f23120e061bff34f8f002070bd00bf'
+
+  ..string.rep('0',152)):gsub('..',function(h) return string.char(tonumber(h,16)) end))
+
+local function fn(offset) return (EXEC+offset)|1 end
+
+local function native(f,a,b,c,d,e)
+
+  assert(f%2==1 and (f==MALLOC or (EXEC~=0 and f>=EXEC and f<EXEC+MODULE_SIZE)), 'native entry')
+
+  local blob=TRAMP..string.pack('<I4I4I4I4I4I4I4I4',f,a or 0,b or 0,c or 0,d or 0,e or 0,0,0)
+
+  local p,owner=owned_string(blob);local parts={}
+
+  for line=p&~31,(p+224)&~31,32 do parts[#parts+1]=string.format('mw %s=%08x',hx(0x07FFC080),line) end
+
+  if batch then
+
+    parts[#parts+1]='exec '..hx((p-0x20000000)|1);shell(table.concat(parts,';'))
+
+  else writes(parts);shell('exec '..hx((p-0x20000000)|1)) end
+
+  local result=blob:sub(0x99,0xA0);assert(word(result,4)==0x42315039 and #owner==160,'native result')
+
+  return word(result,0)
+
+end
+
+local function copy_fast(dst,s)
+  assert(module_ready,'copy bridge not ready')
+  local allowed=false
+  for _,r in ipairs(ranges) do if dst>=r[1] and dst+#s<=r[2] then allowed=true;break end end
+  assert(allowed,'unowned bulk copy')
+  local src,owner=owned_string(s)
+  assert(native(fn(OFF_COPY),dst,src,#s)==dst and #owner==#s,'bulk copy failed')
+end
+local function sync_fast(p,n)
+  assert(module_ready and native(fn(OFF_SYNC),p,n)==n,'bulk cache sync failed')
+end
+
+local function probe_batch()
+
+  local scratch=string.rep('\0',192);local p,owner=owned_string(scratch);own(p,8)
+
+  shell(string.format('mw %s=11223344;mw %s=55667788',hx(p),hx(p+4)))
+
+  local bytes=read(p,8);assert(word(bytes,0)==0x11223344 and word(bytes,4)==0x55667788 and #owner==192,'NSH chaining unavailable')
+
+  batch=true
+
+end
+
+local function load_module()
+
+  if module_ready then return end
+
+  assert(#MODULE_BIN==MODULE_SIZE,'payload size')
+
+  mark('复制原生模块')
+
+  if MODULE_BLOCK==0 then MODULE_BLOCK=native(MALLOC,((MODULE_SIZE+255)//256)*256) end
+
+  assert(heap(MODULE_BLOCK,MODULE_SIZE),'module allocation')
+
+  own(MODULE_BLOCK,(MODULE_SIZE+3)&~3)
+
+  -- The pinned Lua string is temporary executable storage for the audited
+  -- self-contained copy/sync prefix. The resident timer always uses the heap
+  -- copy below, which survives unloading this watchface and Lua collection.
+  local src,owner=owned_string(MODULE_BIN)
+  EXEC=src-0x20000000
+  sync_code(src,BOOTSTRAP_SIZE)
+  assert(native(fn(OFF_COPY),MODULE_BLOCK,src,MODULE_SIZE)==MODULE_BLOCK and #owner==MODULE_SIZE,'bootstrap copy')
+  assert(native(fn(OFF_SYNC),MODULE_BLOCK,MODULE_SIZE)==MODULE_SIZE,'bootstrap sync')
+  EXEC=MODULE_BLOCK-0x20000000
+
+  assert(native(fn(OFF_MAGIC))==0x4D544C42,'native magic')
+
+  module_ready=true
+
+end
+
+local function resident(REG_BLK)
+
+  local REG_APP,REG_PAGE,REG_ICONS=REG_BLK,REG_BLK+0x40,REG_BLK+0xB0
+
+  local REG_STUB,REG_TICK,REG_UI=REG_BLK+0xE8,REG_BLK+0xF0,REG_BLK+0x150
+
+  local REG_IDENT,REG_ICON=REG_BLK+RES.ident,REG_BLK+RES.icon
+
+  local REG_STAT,CFG=REG_BLK+RES.status,REG_BLK+RES.cfg
+
+@@RESIDENT@@
+
+  local chunks,positions={},{}
+
+  for off,w in pairs(v) do chunks[off]=string.pack('<I4',w) end
+
+  for off,s in pairs(strings) do chunks[off]=s..'\0' end
+
+  for off in pairs(chunks) do positions[#positions+1]=off end;table.sort(positions)
+
+  local out,cursor={},0
+
+  for _,off in ipairs(positions) do
+
+    assert(off>=cursor,'resident overlap');out[#out+1]=string.rep('\0',off-cursor)
+
+    out[#out+1]=chunks[off];cursor=off+#chunks[off]
+
+  end
+
+  assert(cursor<=RES.size,'resident size');out[#out+1]=string.rep('\0',RES.size-cursor)
+
+  return table.concat(out)
+
+end
+
+local function write_icon()
+
+@@ICON@@
+
+end
+
+local function arm_registrar()
+
+  BRIDGE=native(MALLOC,128);own(BRIDGE,128)
+
+  local code=string.pack('<I4I4I4I4',0x4B024901,0xBF004718,BRIDGE,fn(OFF_TIMER_BOOTSTRAP))
+
+  local blob=string.pack('<I4I4I4I4I4I4I4I4',0x544D425A,0x0C25A289,fn(OFF_REGTICK),600,BLOCK+0xF0,0,0,0)
+
+    ..code..string.rep('\0',80)
+
+  copy_fast(BRIDGE,blob)
+
+  sync_code(BRIDGE+32,16)
+
+  REG_TIMER=lvgl.Timer{period=100,repeat_count=-1,paused=true,cb=function(t) t:pause() end}
+
+  local ud=tonumber(tostring(REG_TIMER):match('0x(%x+)$'),16);assert(heap(ud,4),'timer userdata')
+
+  local tp=word(read(ud,4),0);assert(heap(tp,24),'timer pointer')
+
+  local raw=read(tp,24)
+
+  assert(word(raw,0)==100 and word(raw,16)==0xFFFFFFFF and heap(word(raw,12),8),'timer ABI')
+
+  local cb=word(raw,8);assert(cb>=0x0C080001 and cb<0x0C7EA290 and cb%2==1,'timer callback ABI')
+
+  own(tp+8,4);write32(tp+8,(BRIDGE+32-0x20000000)|1);REG_TIMER:ready();REG_TIMER:resume()
+
+end
+
+-- Reuse the bootstrap and its native timer slot. Never allocate another
+-- registrar just because the installer times out or the user taps Retry.
+local function retry_registrar()
+  local r=read(BLOCK+0xF0,96)
+  assert(word(r,0)==0x52474554,'注册上下文损坏，请重启')
+  local b=read(BRIDGE,28)
+  assert(word(b,0)==0x544D425A,'定时器上下文损坏，请重启')
+  if word(b,20)==0 and REG_TIMER then REG_TIMER:ready();REG_TIMER:resume() end
+  if (word(r,4)==2 or word(r,4)==3) and word(r,0x40)==0 and word(r,0x4C)>=80 then write32(BLOCK+0xF0+0x4C,0) end
+end
+
+local function registration_failure(bytes)
+  local b=read(BRIDGE,28)
+  local native_timer=runtime_ptr(word(b,20),24) and 1 or 0
+  return string.format('注册未完成 S%d B%d\nT%d A%d N%d C%d\nL%x I%x',
+    word(bytes,4),word(bytes,0x5C),word(bytes,0x30),word(bytes,0x4C),native_timer,word(b,24),word(bytes,0x34),word(bytes,0x40))
+end
+
+
+
+local root=lvgl.Object(nil,{w=336,h=480,bg_color=0x0B1118,bg_opa=lvgl.OPA(100),border_width=0,pad_all=0})
+root:clear_flag(lvgl.FLAG.SCROLLABLE | lvgl.FLAG.CLICKABLE | lvgl.FLAG.PRESS_LOCK)
+root:add_flag(lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE)
+local title_font,body=lvgl.Font('MiSans-Regular',32),lvgl.Font('MiSans-Regular',22)
+local version_font=lvgl.Font('MiSans-Regular',18)
+local function label(text,y,h,font,color)
+  local o=lvgl.Label(root,{text=text,width=304,height=h,text_font=font,text_color=color,text_align=1,
+    align={type=lvgl.ALIGN.TOP_LEFT,x_ofs=16,y_ofs=y}})
+  o:clear_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.PRESS_LOCK)
+  o:add_flag(lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE);return o
+end
+label(TITLE..' 安装器',96,48,title_font,0xDCE5EE)
+local compatibility=label('小米手环 9 Pro · N67\n适配系统 3.1.190',164,96,version_font,0x8195A8)
+local install=lvgl.Object(root,{w=304,h=76,bg_color=0x63D9C1,bg_opa=lvgl.OPA(100),radius=18,
+  border_width=0,pad_all=0,align={type=lvgl.ALIGN.TOP_LEFT,x_ofs=16,y_ofs=270}})
+install:clear_flag(lvgl.FLAG.SCROLLABLE | lvgl.FLAG.PRESS_LOCK)
+install:add_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE)
+local caption=lvgl.Label(install,{text='安装应用',width=292,height=32,text_font=body,text_color=0x0B211C,text_align=1,
+  align={type=lvgl.ALIGN.CENTER,x_ofs=0,y_ofs=0}})
+caption:clear_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.PRESS_LOCK)
+caption:add_flag(lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE)
+local function system_version()
+  local f=io.open('/system/version/version.ini','rb');if not f then return nil end
+  local raw=f:read('*a');f:close();return raw and raw:match('version%s*=%s*([%d.]+)')
+end
+
+local function phase(s)
+  mark(s)
+  caption:set{text=s}
+  compatibility:set{text='当前进度: '..s, text_color=0x22C55E}
+end
+
+local function install_app()
+  local version=system_version()
+  assert(version=='3.1.190','系统版本不支持：'..tostring(version or '无法读取'))
+  if not armed then
+    phase('连接注册接口');probe_batch();load_module()
+    phase('检查应用注册')
+    local found=native(fn(OFF_INSTALL_CHECK),0x0C4467B5,APP_ID)
+    if runtime_ptr(found,60) then
+      phase('修复已驻留应用图标')
+      if BLOCK==0 then BLOCK=native(MALLOC,RES.size);own(BLOCK,RES.size) end
+      local fields={[0]=0x52474554,[4]=2,[8]=2,[16]=0x0C4467B5,
+        [24]=0x0C2A47A1,[28]=found,[40]=APP_ID,[56]=0x200A3938,[60]=0x200A1DE8}
+      local words={};for o=0,92,4 do words[#words+1]=string.pack('<I4',fields[o] or 0) end
+      copy_fast(BLOCK,string.rep('\0',RES.size))
+      copy_fast(BLOCK+0xF0,table.concat(words))
+      block_ready=true;arm_registrar();armed=true
+    else
+    assert(found==0,'注册未就绪 '..found..'，请进入一次应用列表')
+    phase('准备原生应用');write_icon()
+    if BLOCK==0 then BLOCK=native(MALLOC,RES.size);own(BLOCK,RES.size) end
+    if not block_ready then
+      local blob=resident(BLOCK)
+      copy_fast(BLOCK,blob);sync_fast(BLOCK+0xE8,8)
+      if RES.gap_thunks then sync_code(BLOCK+RES.gap_thunks,96) end
+      block_ready=true
+    end
+    phase('注册应用图标');arm_registrar();armed=true
+    end
+  else
+    retry_registrar()
+  end
+  local last
+  for i=1,150 do
+    for _=1,10 do yield_step() end
+    local bytes=read(BLOCK+0xF0,96);local stage,bc=word(bytes,4),word(bytes,0x5C)
+    last=bytes
+    local info=string.format('stage=%d bc=%d tries=%d launcher=%x ticks=%d',stage,bc,word(bytes,0x4C),word(bytes,0x40),word(bytes,0x30))
+    mark(info)
+    compatibility:set{text='正在注册 '..i..'/150\n请返回表盘后上滑查看应用', text_color=0x71717A}
+    if stage==3 and runtime_ptr(word(bytes,0x40),32) then
+      install:set{bg_color=0x052E16}
+      caption:set{text='安装成功', text_color=0x22C55E}
+      compatibility:set{text='Chaos 注册完成\n返回表盘后上滑打开 Chaos', text_color=0x22C55E}
+      mark('installed '..info);return
+    end
+    assert(stage<0x100,'原生注册失败 '..stage)
+    if i==10 and word(bytes,0x30)==0 then retry_registrar() end
+  end
+  error(registration_failure(last),0)
+end
+
+install:onevent(lvgl.EVENT.SHORT_CLICKED,function()
+  if work then return end
+  install:set{bg_color=0x18181B}
+  caption:set{text='正在注入中...', text_color=0xFAFAFA}
+  work=coroutine.create(install_app)
+end)
+
+local scheduler=lvgl.Timer{period=20,repeat_count=-1,cb=function(t)
+  if work then
+    local ok,err=coroutine.resume(work)
+    if not ok then
+      mark('FAIL '..tostring(err))
+      install:set{bg_color=0x7F1D1D}
+      caption:set{text='重试注入', text_color=0xFCA5A5}
+      local message=tostring(err):gsub('^.-%.lua:%d+:%s*','')
+      compatibility:set{text=message,text_color=0xFF909C}
+      work=nil
+    elseif coroutine.status(work)=='dead' then work=nil end
+  end
+  t:resume()
+end}
+
+keep(root);keep(scheduler)
+local prev=io.open(MARK,'rb');if prev then log('prev: '..tostring(prev:read('*a')));prev:close() end
+log('=== ready '..TITLE..' v'..RELEASE..' native='..MODULE_SIZE)
+assert(#MODULE_BIN==MODULE_SIZE,'invalid installer payload')

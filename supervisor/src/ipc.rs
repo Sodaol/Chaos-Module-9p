@@ -121,15 +121,11 @@ pub(crate) unsafe fn build_structures() {
     let cb_pause = chaos_on_pause as *const () as u32;
     let cb_destroy = chaos_on_destroy as *const () as u32;
     let cb_ui_destroy = chaos_on_ui_destroy as *const () as u32;
-    // 逐页注册(固件自带模块是 3 页模式, 这里扩到 29 页; 全部填充无空页 —— 空描述符会崩):
-// page0=信息 page1=应用管理 page2/3=时间/日期设置 page4=系统模糊 page5=更换字体
-// page6=桌面图标 page7=应用管理·排除项 page8/9=表盘切换/摇一摇轮换 page10=表盘管理
-// page11=亮度 page12=缓存 page13=系统美化菜单 page14=设置 page15=模糊区域 page16=震动
-// page17=运行日志 page18=关于 page19=恢复fetch page20=开放源代码许可 page21=MPL许可正文
-// page22=系统版本显示 page23=键盘 page24=系统关于页面修改 page25=手环系统文本
-// page26=设备名称 page27=手环型号 page28=应用列表设置。
+    // 14 页注册(固件自带模块是 3 页模式, 这里扩到 14 页; 全部填充无空页 —— 空描述符会崩):
+// page0=信息 page1..4=目录0..3级 page5=更换字体 page6=桌面图标 page7=文件查看
+// page8/9=表盘切换/摇一摇轮换 page10=表盘管理 page11=亮度 page12=罗小黑桌宠 page13=系统美化菜单。
 // **每级目录独立 page_id → 进入/返回/标题< 全走 page_goto/page_back 固件动画**;
-// 美化页的二级页同样给独立 page_id, 就是为了让它们也有这个动画。
+// 美化页的两个二级页同样给独立 page_id, 就是为了让它们也有这个动画。
 let cb_create = chaos_on_create as *const () as u32;
 let cb_resume = chaos_on_resume as *const () as u32;
 let app_id = st_rd!(APP_ID);
@@ -138,35 +134,18 @@ let desc = core::ptr::addr_of_mut!(DESC) as *mut u32;
 let pnames: [u32; PAGE_COUNT] = [
     core::ptr::addr_of!(PAGE_MAIN) as u32,
     core::ptr::addr_of!(PAGE_DIR0) as u32,
-    core::ptr::addr_of!(PAGE_TIME) as u32,
-    core::ptr::addr_of!(PAGE_DATEMD) as u32,
-    core::ptr::addr_of!(PAGE_BLUR) as u32,
+    core::ptr::addr_of!(PAGE_DIR1) as u32,
+    core::ptr::addr_of!(PAGE_DIR2) as u32,
+    core::ptr::addr_of!(PAGE_DIR3) as u32,
     core::ptr::addr_of!(PAGE_TXTSUB) as u32,
     core::ptr::addr_of!(PAGE_ICONSUB) as u32,
-    core::ptr::addr_of!(PAGE_EXCL) as u32,
+    core::ptr::addr_of!(PAGE_VIEWR) as u32,
     core::ptr::addr_of!(PAGE_WFACES) as u32,
     core::ptr::addr_of!(PAGE_ROT) as u32,
     core::ptr::addr_of!(PAGE_MGR) as u32,
     core::ptr::addr_of!(PAGE_BRIGHT) as u32,
-    core::ptr::addr_of!(PAGE_CACHE) as u32,
+    core::ptr::addr_of!(PAGE_PET) as u32,
     core::ptr::addr_of!(PAGE_FONTD) as u32,
-    core::ptr::addr_of!(PAGE_ABOUT) as u32,
-    core::ptr::addr_of!(PAGE_ZONE) as u32,
-    core::ptr::addr_of!(PAGE_VIB) as u32,
-    core::ptr::addr_of!(PAGE_LOG) as u32,
-    core::ptr::addr_of!(PAGE_ABOUT2) as u32,
-    core::ptr::addr_of!(PAGE_FETCH) as u32,
-    core::ptr::addr_of!(PAGE_LICENSES) as u32,
-    core::ptr::addr_of!(PAGE_LICENSE_MPL) as u32,
-    core::ptr::addr_of!(PAGE_SYSVER) as u32,
-    core::ptr::addr_of!(PAGE_KEYBOARD) as u32,
-    core::ptr::addr_of!(PAGE_ABOUT_MOD) as u32,
-    core::ptr::addr_of!(PAGE_SYSTEXT) as u32,
-    core::ptr::addr_of!(PAGE_DEVNAME) as u32,
-    core::ptr::addr_of!(PAGE_DEVMODEL) as u32,
-    core::ptr::addr_of!(PAGE_APPLIST) as u32,
-    core::ptr::addr_of!(PAGE_DETAIL) as u32,
-    core::ptr::addr_of!(PAGE_BATCH) as u32,
 ];
 let mut pg = 0usize;
 while pg < PAGE_COUNT {
@@ -282,11 +261,8 @@ pub(crate) unsafe fn cmd_install(phase: u32) {
         desc_addr, desc_addr + 0x74, desc_addr + 0xE8, desc_addr + 0x15C,
         desc_addr + 0x1D0, desc_addr + 0x244, desc_addr + 0x2B8, desc_addr + 0x32C,
         desc_addr + 0x3A0, desc_addr + 0x414, desc_addr + 0x488, desc_addr + 0x4FC,
-        desc_addr + 0x570, desc_addr + 0x5E4, desc_addr + 0x658, desc_addr + 0x6CC,
-        desc_addr + 0x740, desc_addr + 0x7B4, desc_addr + 0x828, desc_addr + 0x89C,
-        desc_addr + 0x910, desc_addr + 0x984, desc_addr + 0x9F8, desc_addr + 0xA6C,
-        desc_addr + 0xAE0, desc_addr + 0xB54, desc_addr + 0xBC8, desc_addr + 0xC3C,
-        desc_addr + 0xCB0, desc_addr + 0xD24, desc_addr + 0xD98,
+        desc_addr + 0x570,
+        desc_addr + 0x5E4,
     ];
     trace_step(12); // register_app 前
     let install_result = install(meta, items.as_ptr(), PAGE_COUNT as u32);
@@ -294,7 +270,6 @@ pub(crate) unsafe fn cmd_install(phase: u32) {
     fops_wr(FOPS_DBG1, install_result as u32);
     // 注册成功置标志（防 notify 触发的重入）
     st_wr!(APP_REGISTERED, 1);
-    crate::watchface::maintenance_arm();
 
     if phase < 0x12 { return; }
 
@@ -312,11 +287,7 @@ pub(crate) unsafe fn cmd_install(phase: u32) {
     } else {
         trace_step(16); // init_buffer 前
         let app_id = st_rd!(APP_ID);
-        if crate::launcher_entry::enabled() {
-            let _buf = init_buffer(app_id); // 开启“应用列表显示”时加入 Launcher
-        } else {
-            trace_step(18); // 用户关闭应用列表入口，保留注册但跳过图标注入
-        }
+        let _buf = init_buffer(app_id); // init_buffer(自己的app_id)，同拍同id —— 与固件自带模块的调用方式一致
         trace_step(17); // init_buffer 后
         if phase < 0x13 { return; }
     }
@@ -347,121 +318,6 @@ pub(crate) unsafe fn notify_firmware_full() {
     fops_wr(FOPS_DBG2, rc as u32);
 }
 
-// 启动命令只入队，注册操作由 UI 线程逐拍执行。
-pub const CMD_BOOT_DQ: u32 = 0x5348_4333;
-const SHELLPP_SETTINGS_DQ: u32 = 0x5351_001B;
-const SHELLPP_SETTINGS_BUILD: u32 = 0x0435_0901;
-static DQ_SEQ: [u32; 3] = [0x18, 0x13, 0x22];
-const DQ_PERIOD_MS: u32 = 1000;
-const DQ_IDLE_MS: u32 = 60000;
-const DQ_TRIES_MAX: u32 = 8;
-static mut DQ_STEP: u32 = 0;
-static mut DQ_TRIES: u32 = 0;
-static mut DQ_TIMER: u32 = 0;
-static mut DQ_FIRED: u32 = 0;
-
-unsafe fn run_install_cmd(arg0: u32, arg1: u32) {
-    // 安装流程用到的命令: 0/1/2 注册发布, 0x13 注册链, 0x43 固件 notify,
-    // 0x44/0x45 设置页与系统更新页入口, 0x46 Launcher 图标, 0x18/0x19 语言,
-    // 0x22 回读槽统计, 0x30 字体投递与切换(投递包)
-    match arg0 {
-        0    => { fops_wr(FOPS_STEP, 0); cmd_install(0x12); }   // 注册链(止于 init_buffer)
-        1 | 2 => { /* no-op publish: 不调固件，仅置 ACTIVE */ }
-        0x13 => { fops_wr(FOPS_STEP, 0); cmd_install(0x13); }   // 完整注册链
-        0x43 => { fops_wr(FOPS_STEP, 0); notify_firmware_full(); } // 固件完整 notify 链
-        0x44 => { crate::settings_entry::request(); }
-        0x45 => { crate::system_update_entry::request(); }
-        0x46 => { crate::launcher_entry::set_enabled(arg1 != 0); }
-        0x18 => { st_wr!(LANG, 1); } // 设中文
-        0x19 => { st_wr!(LANG, 0); } // 设英文
-        0x22 => {
-            // 回读槽统计: d0=选中id d1=空闲数 d2=空闲位图
-            fops_wr(FOPS_DBG0, st_rd!(APP_ID));
-            fops_wr(FOPS_DBG1, st_rd!(FREE_COUNT));
-            fops_wr(FOPS_DBG2, st_rd!(FREE_BITS));
-        }
-        // 字体投递(字体包 Lua 专用): arg1 = 目标池位(1..8), 发这条命令时
-        // Lua 已经把新字体整份写进了那个池位。这里只做三件事: 切池位、换登记名
-        // (ChaosSans-R<代>, 必须换 —— 固件 face 缓存按 (名字,尺寸) 命中, 沿用旧名
-        // 会拿回按旧文件建的脸)、请求重应用(下一拍起分拍重建所有脸)。
-        //
-        // 三道门, 任何一条不过就不动: 池位合法 / 不是当前正在用的那一份(覆写在用
-        // 文件会让还活着的老脸读到别人的字节 = font_apply 红线) / 当前没有正在跑的
-        // 应用(半途换池位会让正在建的那批脸读到另一个文件)。被拒时池位不变,
-        // 投递包靠"回读 +0x46 是否等于自己请求的值"判成败, 所以这里不需要额外回报。
-        //
-        // 这条路也是**切换字体**的唯一入口: 清单页点某一条 = 同一句命令
-        // (ko 侧 font_list::click_entry 直接调 commit + request)。所以门放宽到
-        // 池位 1..8, 与 FONT_SLOT_MAX 同一常量, 不写死数字。
-        0x30 => {
-            let slot = arg1;
-            if slot >= 1 && slot <= font_apply::FONT_SLOT_MAX
-                && slot != font_apply::live_get()
-                && !font_apply::busy()
-                && font_slot_file_ok(slot)
-            {
-                font_apply::commit(slot);
-                font_apply::request();
-            }
-        }
-
-        _   => {}
-    }
-    // 每条 INSTALL 类命令收尾都把槽 0 刷成"激活"记录(激活态/保留/模块 id/0),
-    // Lua 端 read_status 的槽位区读的就是这四词。
-    fops_wr(FOPS_SLOTS, ST_ACTIVE);
-    fops_wr(FOPS_SLOTS + 1, 0);
-    fops_wr(FOPS_SLOTS + 2, MOD_ID);
-    fops_wr(FOPS_SLOTS + 3, 0);
-}
-
-unsafe extern "C" fn dq_timer_cb(_t: u32) {
-    let step = st_rd!(DQ_STEP);
-    if step == 0 || st_rd!(WRITE_BUSY) != 0 { return; }
-    let i = (step - 1) as usize;
-    if i >= DQ_SEQ.len() { return; }
-    st_wr!(WRITE_BUSY, 1);
-    // 自启动注册前读取 Launcher 图标开关；这里已在 UI 定时器上下文，可安全读文件。
-    crate::launcher_entry::load();
-    run_install_cmd(DQ_SEQ[i], 0);
-    st_wr!(WRITE_BUSY, 0);
-    st_wr!(DQ_STEP, if i + 1 >= DQ_SEQ.len() { 0 } else { step + 1 });
-    if st_rd!(DQ_STEP) == 0 {
-        // 注册队列收尾已在 UI 线程，启动幂等的后台维护。
-        if st_rd!(APP_REGISTERED) != 0 { crate::watchface::maintenance_arm(); }
-        let timer = st_rd!(DQ_TIMER);
-        fw_api::timer_set_period(timer, DQ_IDLE_MS);
-        if fw_api::timer_period_of(timer) != DQ_IDLE_MS {
-            st_wr!(DQ_TRIES, DQ_TRIES_MAX);
-        }
-    }
-}
-
-unsafe fn dq_start() -> i32 {
-    if st_rd!(DQ_FIRED) != 0 { return 0; }
-    if st_rd!(APP_REGISTERED) != 0 { return -16; }
-    if st_rd!(DQ_TRIES) >= DQ_TRIES_MAX { return -19; }
-    st_wr!(DQ_TRIES, st_rd!(DQ_TRIES) + 1);
-    if st_rd!(DQ_TIMER) == 0 {
-        let t = fw_api::timer_create(dq_timer_cb as *const () as u32, DQ_IDLE_MS, 0);
-        if t == 0 { return -19; }
-        st_wr!(DQ_TIMER, t);
-        if fw_api::timer_period_of(t) != DQ_IDLE_MS {
-            st_wr!(DQ_TRIES, DQ_TRIES_MAX);
-            return -19;
-        }
-    }
-    let t = st_rd!(DQ_TIMER);
-    fw_api::timer_set_period(t, DQ_PERIOD_MS);
-    if fw_api::timer_period_of(t) != DQ_PERIOD_MS {
-        st_wr!(DQ_TRIES, DQ_TRIES_MAX);
-        return -19;
-    }
-    st_wr!(DQ_FIRED, 1);
-    st_wr!(DQ_STEP, 1);
-    0
-}
-
 #[no_mangle]
 pub(crate) unsafe extern "C" fn chaos_write(_: *mut u8, buf: *const u8, len: u32) -> i32 {
     // 命令帧至少 16 字节: magic | cmd | arg0 | arg1
@@ -476,15 +332,7 @@ pub(crate) unsafe extern "C" fn chaos_write(_: *mut u8, buf: *const u8, len: u32
     let writes_now = fops_rd(FOPS_WCNT) + 1;
     fops_wr(FOPS_WCNT, writes_now);
     let frame = buf as *const u32;
-    let magic = core::ptr::read_volatile(frame);
-    if magic == 0x5350_5331 && core::ptr::read_volatile(frame.add(1)) == SHELLPP_SETTINGS_DQ {
-        let stage = core::ptr::read_volatile(frame.add(2));
-        if stage != SHELLPP_SETTINGS_BUILD { st_wr!(WRITE_BUSY, 0); return -22; }
-        crate::settings_entry::request();
-        st_wr!(WRITE_BUSY, 0);
-        return 16;
-    }
-    if magic != CMD_MAGIC {
+    if core::ptr::read_volatile(frame) != CMD_MAGIC {
         st_wr!(WRITE_BUSY, 0);
         return 0;
     }
@@ -505,21 +353,62 @@ pub(crate) unsafe extern "C" fn chaos_write(_: *mut u8, buf: *const u8, len: u32
         st_wr!(WRITE_BUSY, 0); // 清锁再返回
         return 16; // 已注册，INSTALL 重入静默成功（重复的注册命令按幂等处理）
     }
-    if cmd == CMD_INSTALL && st_rd!(DQ_STEP) != 0
-        && (arg0 <= 2 || arg0 == 0x13 || arg0 == 0x43) {
-        st_wr!(WRITE_BUSY, 0);
-        return -16;
-    }
-    let result = match cmd {
-        CMD_INSTALL => { run_install_cmd(arg0, arg1); 16 }
-        CMD_BOOT_DQ => {
-            let rc = dq_start();
-            if rc < 0 { rc } else { 16 }
+    match cmd {
+        CMD_INSTALL => {
+            // 安装流程用到的命令: 0/1/2 注册发布, 0x13 注册链, 0x43 固件 notify,
+            // 0x18/0x19 语言, 0x22 回读槽统计, 0x30 字体投递与切换(投递包)
+            match arg0 {
+                0    => { fops_wr(FOPS_STEP, 0); cmd_install(0x12); }   // 注册链(止于 init_buffer)
+                1 | 2 => { /* no-op publish: 不调固件，仅置 ACTIVE */ }
+                0x13 => { fops_wr(FOPS_STEP, 0); cmd_install(0x13); }   // 完整注册链
+                0x43 => { fops_wr(FOPS_STEP, 0); notify_firmware_full(); } // 固件完整 notify 链
+                0x18 => { st_wr!(LANG, 1); } // 设中文
+                0x19 => { st_wr!(LANG, 0); } // 设英文
+                0x22 => {
+                    // 回读槽统计: d0=选中id d1=空闲数 d2=空闲位图
+                    fops_wr(FOPS_DBG0, st_rd!(APP_ID));
+                    fops_wr(FOPS_DBG1, st_rd!(FREE_COUNT));
+                    fops_wr(FOPS_DBG2, st_rd!(FREE_BITS));
+                }
+                // 字体投递(字体包 Lua 专用): arg1 = 目标池位(1..8), 发这条命令时
+                // Lua 已经把新字体整份写进了那个池位。这里只做三件事: 切池位、换登记名
+                // (ChaosSans-R<代>, 必须换 —— 固件 face 缓存按 (名字,尺寸) 命中, 沿用旧名
+                // 会拿回按旧文件建的脸)、请求重应用(下一拍起分拍重建所有脸)。
+                //
+                // 三道门, 任何一条不过就不动: 池位合法 / 不是当前正在用的那一份(覆写在用
+                // 文件会让还活着的老脸读到别人的字节 = font_apply 红线) / 当前没有正在跑的
+                // 应用(半途换池位会让正在建的那批脸读到另一个文件)。被拒时池位不变,
+                // 投递包靠"回读 +0x46 是否等于自己请求的值"判成败, 所以这里不需要额外回报。
+                //
+                // 这条路也是**切换字体**的唯一入口: 清单页点某一条 = 同一句命令
+                // (ko 侧 font_list::click_entry 直接调 commit + request)。所以门放宽到
+                // 池位 1..8, 与 FONT_SLOT_MAX 同一常量, 不写死数字。
+                0x30 => {
+                    let slot = arg1;
+                    if slot >= 1 && slot <= font_apply::FONT_SLOT_MAX
+                        && slot != font_apply::live_get()
+                        && !font_apply::busy()
+                        && font_slot_file_ok(slot)
+                    {
+                        font_apply::commit(slot);
+                        font_apply::request();
+                    }
+                }
+
+                _   => {}
+            }
+            // 每条 INSTALL 类命令收尾都把槽 0 刷成"激活"记录(激活态/保留/模块 id/0),
+            // Lua 端 read_status 的槽位区读的就是这四词。
+            fops_wr(FOPS_SLOTS, ST_ACTIVE);
+            fops_wr(FOPS_SLOTS + 1, 0);
+            fops_wr(FOPS_SLOTS + 2, MOD_ID);
+            fops_wr(FOPS_SLOTS + 3, 0);
         }
-        _ => 16,
-    };
+        _ => {}
+    }
     // 清理: 释放 write 重入锁
     st_wr!(WRITE_BUSY, 0);
     trace_step(0xAA); // write 完成返回
-    result
+    16
 }
+

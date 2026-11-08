@@ -1,6 +1,6 @@
 -- chaos_sup 原生应用安装器
 -- 流程约束：
--- 1. 不做 rmmod。模块已加载时只更新磁盘文件，重启后加载更新。
+-- 1. 不做 rmmod。若 /dev/chaos 已存在说明旧模块还在内核里，此时要求重启设备再运行。
 --    根因: rmmod 释放模块内存，但 app 注册链表的条目留在原地悬空 → 切表盘时
 --    launcher 遍历到悬空回调 → 崩。
 -- 2. 每条命令一个独立 timer 拍，让 miwear 的事件循环在两个注册阶段之间转一圈。
@@ -45,26 +45,16 @@ local V_R     = 24
 -- 所以标题也走系统字体, 层级靠**字号与颜色**建立。
 local F_BODY  = "MiSans-Regular"
 
-local SUPERVISOR_RESOURCE = SCRIPT_PATH .. "chaos_sup.bin"
+local SUPERVISOR_RESOURCE = SCRIPT_PATH .. "chaos_sup.ko"
 local SUPERVISOR_PATH = "/data/chaos/sup.ko"
-local FETCH_RESOURCE = SCRIPT_PATH .. "fetch-module.bin"
-local FETCH_PATH = "/data/chaos/fetch-module.ko"
-local CAPATCH_RESOURCE = SCRIPT_PATH .. "capatch.bin"
-local CAPATCH_PATH = "/data/ssl/capatch.elf"
-local PEM_RESOURCE = SCRIPT_PATH .. "ca.pem"
-local PEM_PATH = "/data/ssl/ca.pem"
-local SSL_DIR = "/data/ssl"
 local ICON_RESOURCE = SCRIPT_PATH .. "chaos_icon.bin"
-local SETTINGS_ICON_RESOURCE = SCRIPT_PATH .. "chaos_icon_settings.bin"
 local ICON_PATH = "/data/chaos/chaos_icon.bin"
-local SETTINGS_ICON_PATH = "/data/chaos/chaos_icon_settings.bin"
 local DATA_DIR = "/data/chaos"
 local DEVICE_PATH = "/dev/chaos"
 
 local CMD_MAGIC = 0x53484331           -- "1CHS"
 local STATUS_MAGIC = 0x53484332        -- "2CHS"
 local STATUS_VERSION = 0x43485302      -- "CHS2"
-local CMD_BOOT_DQ = 0x53484333
 local CMD_INSTALL = 2
 local STATUS_SIZE = 192
 local STATE_ACTIVE = 1
@@ -75,32 +65,10 @@ local status_label
 -- wipe_armed = 清除按钮的两段式确认闸。
 local runner
 local step_index = 1
-local settings_enabled = true
-local system_update_enabled = false
-local launcher_enabled = true
--- fetch 已固定启用，不再读取可能残留的 fetch.cfg。
-local fetch_enabled = true
 local started_once = false
 local wipe_armed = false
 
--- 状态行是单行居中(卡片 304 宽 / 22px 字): 超宽会被屏幕裁掉, 显示前按"半角宽度"截断。
--- 中文/全角算 2 个单位, ASCII 算 1; 上限 26 个单位 = 13 个汉字 = 286px。
--- 拼接出来的消息(如 "更新失败: " .. err)单条看都不长、拼起来会超, 所以截断放在显示层。
-local function fit_status(text)
-  local s = tostring(text)
-  local units, i = 0, 1
-  while i <= #s do
-    local b = s:byte(i)
-    local len = (b >= 0xF0 and 4) or (b >= 0xE0 and 3) or (b >= 0xC0 and 2) or 1
-    local w = (len >= 3) and 2 or 1
-    if units + w > 26 then return s:sub(1, i - 1) .. "…" end
-    units = units + w
-    i = i + len
-  end
-  return s
-end
-
-local function set_status(text, color) status_label:set { text = fit_status(text), text_color = color or V_TXT2 } end
+local function set_status(text, color) status_label:set { text = tostring(text), text_color = color or V_TXT2 } end
 
 -- 把参数变成 POSIX 安全的单引号字面量。单引号内部没有任何转义机制,
 -- 遇到引号只能"关引号 + 转义引号 + 重开引号"。
@@ -215,8 +183,7 @@ local function stage_resource(res, dest)
   exec("mkdir -p " .. DATA_DIR)
   local f = io.open(dest, "wb"); if not f then return false, "cannot open " .. dest end
   local wok, wres = pcall(f.write, f, c); local cok, cres = pcall(f.close, f)
-  if not wok or not wres or not cok or cres == false then return false, "write failed" end
-  if read_all(dest, "rb") ~= c then return false, "模块写入校验失败" end
+  if not wok or not cok then return false, "write failed" end
   return true
 end
 -- 图标素材投递。主包**不内嵌图标包**: 这一槽只有本应用自己的图标
@@ -231,9 +198,7 @@ local function stage_icons()
   exec("mkdir -p " .. DATA_DIR)
   exec("mkdir -p " .. ICON_DIR)
   exec("rm -f " .. ICON_DIR .. "/*.bin")
-  local ok, err = stage_resource(ICON_RESOURCE, ICON_PATH)
-  if not ok then return ok, err end
-  return stage_resource(SETTINGS_ICON_RESOURCE, SETTINGS_ICON_PATH)
+  return stage_resource(ICON_RESOURCE, ICON_PATH)
 end
 
 local function module_loaded()
@@ -252,257 +217,6 @@ local function u32le(value)
     n = math.floor(n / 0x100)
   end
   return table.concat(pieces)
-end
-
-local RC_DIR = "/data/rc.d"
-local RC_SH = RC_DIR .. "/chaos.sh"
-local RC_FETCH_SH = RC_DIR .. "/chaos-fetch.sh"
-local BOOT_FRAME = DATA_DIR .. "/boot.bin"
-local AS_LOG = DATA_DIR .. "/autostart.log"
-local FETCH_AS_LOG = DATA_DIR .. "/fetch-autostart.log"
-local LEGACY_FLAG = DATA_DIR .. "/autostart.on"
-local LEGACY_CHAOS_RC = DATA_DIR .. "/rc"
-local LEGACY_RC_PATH = "/data/rc"
-local LEGACY_HOP = "sh /data/chaos/rc &"
-local function write_file(path, body)
-  if read_all(path) == body then return true end
-  local f = io.open(path, "wb")
-  if not f then return false, "无法写入 " .. path end
-  local ok, value = pcall(f.write, f, body)
-  local closed, result = pcall(f.close, f)
-  if not ok or value == false or not closed or result == false then return false, "写入失败" end
-  if read_all(path) ~= body then return false, "回读核对失败" end
-  return true
-end
-
-local function deploy_https()
-  local capatch, pem = read_all(CAPATCH_RESOURCE), read_all(PEM_RESOURCE)
-  if type(capatch) ~= "string" or #capatch < 52
-    or capatch:sub(1, 4) ~= string.char(127) .. "ELF" then
-    return false, "安装包 capatch 模块无效"
-  end
-  if type(pem) ~= "string" or #pem == 0 then return false, "安装包 CA 证书无效" end
-  exec("mkdir -p " .. SSL_DIR)
-  local ok, err = write_file(CAPATCH_PATH, capatch)
-  if not ok then return false, err end
-  ok, err = write_file(PEM_PATH, pem)
-  if not ok then return false, err end
-  return true
-end
-
--- 已加载的模块保持原样，仅部署下次启动的模块文件。
-local send_settings_command
-local send_command
-local function update_supervisor()
-  local ko = read_all(SUPERVISOR_RESOURCE)
-  local fetch = read_all(FETCH_RESOURCE)
-  if type(ko) ~= "string" or #ko < 52 or ko:sub(1, 4) ~= string.char(127) .. "ELF" then
-    return false, "安装包模块无效"
-  end
-  if type(fetch) ~= "string" or #fetch < 52 or fetch:sub(1, 4) ~= string.char(127) .. "ELF" then
-    return false, "安装包 fetch 模块无效"
-  end
-  exec("mkdir -p " .. DATA_DIR)
-  local ok, err = write_file(SUPERVISOR_PATH, ko)
-  if not ok then return false, err end
-  ok, err = write_file(FETCH_PATH, fetch)
-  if not ok then return false, err end
-  ok, err = deploy_https()
-  if not ok then return false, err end
-  local sf, serr = write_file(DATA_DIR .. "/settings.cfg", string.char(settings_enabled and 1 or 0))
-  if not sf then return false, serr end
-  sf, serr = write_file(DATA_DIR .. "/system_update.cfg", string.char(system_update_enabled and 1 or 0))
-  if not sf then return false, serr end
-  sf, serr = write_file(DATA_DIR .. "/launcher.cfg", string.char(launcher_enabled and 1 or 0))
-  if not sf then return false, serr end
-  if module_loaded() then
-    if settings_enabled then
-      local sent, send_err = send_settings_command()
-      if not sent then return false, send_err end
-    end
-    if system_update_enabled then
-      local sent, send_err = send_command(0x45)
-      if not sent then return false, send_err end
-    end
-    local sent, send_err = send_command(0x46, launcher_enabled and 1 or 0)
-    if not sent then return false, send_err end
-  end
-  -- 状态行是单行居中、卡片只有 304 宽(22px), 太长会被屏幕裁掉; 成功提示收在 220px 内。
-  return true, (settings_enabled or system_update_enabled) and "已更新，重启后设置生效" or "模块已更新，请重启"
-end
-
-local function build_fetch_sh()
-  local L = {}
-  local function w(s) L[#L + 1] = s end
-  -- 特权脚本只负责网络恢复，不能把 Chaos 提前到 launcher 就绪之前。
-  w("# top")
-  w("set +e")
-  w("echo start > " .. FETCH_AS_LOG)
-  w("insmod " .. FETCH_PATH .. " tun > /data/chaos/fetch-insmod.log")
-  w("echo fetch_insmod >> " .. FETCH_AS_LOG)
-  w("insmod " .. CAPATCH_PATH .. " capatch > /data/chaos/capatch-insmod.log")
-  w("echo capatch_insmod >> " .. FETCH_AS_LOG)
-  for level = 1, 4 do
-    w("echo " .. level .. " > /dev/tunentry")
-    w("cat /dev/tunsvc > /dev/null")
-    w("echo fetch_arm" .. level .. " >> " .. FETCH_AS_LOG)
-  end
-  w("echo done >> " .. FETCH_AS_LOG)
-  return table.concat(L, "\n") .. "\n"
-end
-
-local function build_chaos_sh()
-  local L = {}
-  local function w(s) L[#L + 1] = s end
-  -- 普通优先级：等系统及 launcher 就绪后再注册 Chaos。
-  w("set +e")
-  w("echo start > " .. AS_LOG)
-  w("insmod " .. SUPERVISOR_PATH .. " chaos_sup")
-  w("echo insmod >> " .. AS_LOG)
-  w("dd if=" .. DEVICE_PATH .. " of=" .. DATA_DIR .. "/stage1.bin bs="
-    .. STATUS_SIZE .. " count=1 conv=notrunc")
-  w("dd if=" .. BOOT_FRAME .. " of=" .. DEVICE_PATH .. " bs=16 count=1 conv=notrunc")
-  w("echo boot_cmd_sent >> " .. AS_LOG)
-  w("dd if=" .. DEVICE_PATH .. " of=" .. DATA_DIR .. "/stage3.bin bs="
-    .. STATUS_SIZE .. " count=1 conv=notrunc")
-  w("echo done >> " .. AS_LOG)
-  return table.concat(L, "\n") .. "\n"
-end
-
-local function build_boot_frame()
-  return u32le(CMD_MAGIC) .. u32le(CMD_BOOT_DQ) .. u32le(0) .. u32le(0)
-end
-
-local function remove_file(path)
-  if read_all(path) == nil then return true end
-  exec("rm -f " .. path)
-  if read_all(path) ~= nil then return false, "删除失败 " .. path end
-  return true
-end
-
-local function directory_writable(path)
-  local check = path .. "/.chaos-check"
-  local ok, err = write_file(check, "ok")
-  local cleaned, why = remove_file(check)
-  if not cleaned then return false, why end
-  return ok, err
-end
-
-local function rc_dir_ready()
-  local ok = directory_writable(RC_DIR)
-  if ok then return true end
-  if directory_writable("/data") then return false, "先安装自启动管理器" end
-  return false, "写不进 /data，请检查存储"
-end
-
-local function without_legacy_hop(raw)
-  if type(raw) ~= "string" then return raw end
-  local keep, start = {}, 1
-  while start <= #raw do
-    local last = raw:find("\n", start, true) or #raw
-    local line = raw:sub(start, last)
-    if line:gsub("[\r\n]+$", ""):gsub("[ \t]+$", "") ~= LEGACY_HOP then
-      keep[#keep + 1] = line
-    end
-    start = last + 1
-  end
-  return table.concat(keep)
-end
-
-local function legacy_cleanup()
-  local raw = read_all(LEGACY_RC_PATH)
-  local cleaned = without_legacy_hop(raw)
-  if cleaned ~= raw then
-    local ok, err = write_file(LEGACY_RC_PATH, cleaned)
-    if not ok then return false, err end
-  end
-  local ok, err = remove_file(LEGACY_FLAG)
-  if not ok then return false, err end
-  return remove_file(LEGACY_CHAOS_RC)
-end
-
-local function fetch_autostart_matches()
-  local body = read_all(RC_FETCH_SH)
-  if fetch_enabled then return body == build_fetch_sh() end
-  return body == nil
-end
-
-local function autostart_install()
-  local ko, fetch = read_all(SUPERVISOR_RESOURCE), read_all(FETCH_RESOURCE)
-  local icon, settings_icon = read_all(ICON_RESOURCE), read_all(SETTINGS_ICON_RESOURCE)
-  if type(ko) ~= "string" or #ko == 0 or type(fetch) ~= "string" or #fetch == 0
-    or type(icon) ~= "string" or #icon == 0 or type(settings_icon) ~= "string" or #settings_icon == 0 then
-    return false, "安装包资源缺失"
-  end
-  if read_all(SUPERVISOR_PATH) == ko and read_all(FETCH_PATH) == fetch
-    and read_all(CAPATCH_PATH) == read_all(CAPATCH_RESOURCE)
-    and read_all(PEM_PATH) == read_all(PEM_RESOURCE)
-    and read_all(ICON_PATH) == icon and read_all(SETTINGS_ICON_PATH) == settings_icon
-    and read_all(BOOT_FRAME) == build_boot_frame() and read_all(RC_SH) == build_chaos_sh()
-    and fetch_autostart_matches()
-    and read_all(LEGACY_FLAG) == nil and read_all(LEGACY_CHAOS_RC) == nil then
-    local raw = read_all(LEGACY_RC_PATH)
-    if without_legacy_hop(raw) == raw then return true end
-  end
-  local ready, why = rc_dir_ready()
-  if not ready then return false, why end
-  for _, path in ipairs({ DATA_DIR, FONT_DIR, ICON_DIR, SSL_DIR }) do
-    exec("mkdir -p " .. path)
-    local ok, err = directory_writable(path)
-    if not ok then return false, "目录不可写 " .. path .. ": " .. tostring(err) end
-  end
-  if read_all(SUPERVISOR_PATH) ~= ko or read_all(FETCH_PATH) ~= fetch
-    or read_all(CAPATCH_PATH) ~= read_all(CAPATCH_RESOURCE)
-    or read_all(PEM_PATH) ~= read_all(PEM_RESOURCE)
-    or read_all(ICON_PATH) ~= icon or read_all(SETTINGS_ICON_PATH) ~= settings_icon
-    or read_all(BOOT_FRAME) ~= build_boot_frame() then
-    local ok, err = remove_file(RC_SH)
-    if not ok then return false, err end
-    ok, err = remove_file(RC_FETCH_SH)
-    if not ok then return false, err end
-  end
-  local ok, err = write_file(SUPERVISOR_PATH, ko)
-  if not ok then return false, err end
-  ok, err = write_file(FETCH_PATH, fetch)
-  if not ok then return false, err end
-  ok, err = deploy_https()
-  if not ok then return false, err end
-  ok, err = write_file(ICON_PATH, icon)
-  if not ok then return false, err end
-  ok, err = write_file(SETTINGS_ICON_PATH, settings_icon)
-  if not ok then return false, err end
-  ok, err = write_file(BOOT_FRAME, build_boot_frame())
-  if not ok then return false, err end
-  ok, err = legacy_cleanup()
-  if not ok then return false, err end
-  ok, err = write_file(RC_SH, build_chaos_sh())
-  if not ok then return false, err end
-  if fetch_enabled then
-    ok, err = write_file(RC_FETCH_SH, build_fetch_sh())
-  else
-    ok, err = remove_file(RC_FETCH_SH)
-  end
-  if not ok then return false, err end
-  return true
-end
-local function autostart_remove()
-  local ok, err = remove_file(RC_SH)
-  if not ok then return false, err end
-  ok, err = remove_file(RC_FETCH_SH)
-  if not ok then return false, err end
-  ok, err = remove_file(BOOT_FRAME)
-  if not ok then return false, err end
-  return legacy_cleanup()
-end
-local function autostart_registered()
-  return read_all(RC_SH) == build_chaos_sh() and fetch_autostart_matches()
-    and read_all(BOOT_FRAME) == build_boot_frame()
-end
-local function autostart_state_text()
-  if autostart_registered() then
-    return "已注册，开关在管理器"
-  end
-  return "尚未注册自启动"
 end
 
 local function status_words(raw)
@@ -539,18 +253,9 @@ local function read_status()
   }
 end
 
--- 命令帧: magic | cmd | arg0 | arg1(默认 0)，与 chaos_sup 的 fops 写入口对齐
-send_settings_command = function()
-  local frame = u32le(0x53505331) .. u32le(0x5351001B) .. u32le(0x04350901) .. u32le(0)
-  local fh = io.open(DEVICE_PATH, "wb")
-  if not fh then return false, "设备打不开" end
-  local ok, result = pcall(fh.write, fh, frame)
-  local closed, close_result = pcall(fh.close, fh)
-  if not ok or result == false or not closed or close_result == false then return false, "settings 命令写入失败" end
-  return true
-end
-send_command = function(arg0, arg1)
-  local frame = u32le(CMD_MAGIC) .. u32le(CMD_INSTALL) .. u32le(arg0) .. u32le(arg1 or 0)
+-- 命令帧: magic | cmd | arg0 | arg1(恒 0), 与 chaos_sup 的 fops 写入口对齐
+local function send_command(arg0)
+  local frame = u32le(CMD_MAGIC) .. u32le(CMD_INSTALL) .. u32le(arg0) .. u32le(0)
   local fh = io.open(DEVICE_PATH, "wb")
   if not fh then return false, "设备打不开" end
   local wrote, werr = pcall(fh.write, fh, frame)
@@ -572,66 +277,27 @@ local function install_step(arg0)
       st.dbg_lookup or 0, st.dbg_register or 0, st.dbg_verify or 0, st.step or -1)
 end
 
-local FETCH_BUILD = "v108-20261024-dbg-flag"
-local FETCH_INSMOD_LOG = DATA_DIR .. "/fetch-insmod.log"
-local function fetch_log(message)
-  local f = io.open(FETCH_INSMOD_LOG, "ab")
-  if f then f:write(message .. "\n"); f:close() end
-end
-
-local function fetch_state()
-  local status = read_all("/dev/tunentry", "r")
-  local running = type(status) == "string" and status:match("mt_build=([^%s]+)") or nil
-  local armed = type(status) == "string" and status:find("mt_armed=1", 1, true) ~= nil
-  local cap_status = read_all("/dev/capatch", "r")
-  local https_ok = type(cap_status) == "string" and cap_status:find("pret=0", 1, true) ~= nil
-  return running, armed, https_ok
-end
-
-local function ensure_fetch()
-  if not fetch_enabled then return true end
-  -- fetch 只能由特权自启动脚本提前加载；未注册时跳过，绝不在晚期补 insmod。
-  if not autostart_registered() then
-    fetch_log("skip_fetch=no_autostart")
-    return true
-  end
-  local running, armed, https_ok = fetch_state()
-  fetch_log("autostart_mt_build=" .. tostring(running))
-  fetch_log("autostart_mt_armed=" .. tostring(armed and 1 or 0))
-  fetch_log("autostart_https=" .. tostring(https_ok and 1 or 0))
-  if not running then return false, "fetch未自启动, 请重启" end
-  if running ~= FETCH_BUILD then return false, "fetch版本不符, 请重启" end
-  if not armed then return false, "fetch早期布防未完成" end
-  if not https_ok then return false, "HTTPS证书注入未完成" end
-  return true
-end
-
 -- 安装流水线: 每步一个 timer 拍(步骤之间让 miwear 的事件循环转一圈)。
 -- notify_retry: 通知步骤的重试计数(等 launcher 订阅就绪)。
 local notify_retry = 0
 local pipeline = {
   { name = "1 部署模块",     body = function() return stage_resource(SUPERVISOR_RESOURCE, SUPERVISOR_PATH) end },
-  { name = "1.5 部署fetch", body = function() return stage_resource(FETCH_RESOURCE, FETCH_PATH) end },
-  { name = "1.6 部署HTTPS", body = deploy_https },
   { name = "2 部署应用图标", body = stage_icons },
   { name = "2.5 部署字体",   body = stage_fonts },
-  { name = "3 检查旧模块", body = function()
-      if module_loaded() then return false, "旧模块还在, 请重启" end
-      return true
-  end },
-  -- 无自启动时跳过 fetch；有自启动时只验证早期加载结果，然后继续注入 Chaos。
-  { name = "3.1 检查/跳过fetch", body = ensure_fetch },
-  { name = "4 加载Chaos本体", body = function()
+  { name = "3 加载模块", body = function()
+      if module_loaded() then
+        return false, "旧模块还在, 请重启"
+      end
       if not exec(string.format("insmod %s chaos_sup", quote_arg(SUPERVISOR_PATH))) then
-        return false, "Chaos insmod 失败"
+        return false, "insmod 失败"
       end
       return true
   end },
-  { name = "4.1 检查设备", body = function()
+  { name = "4 检查设备", body = function()
       if not module_loaded() then return false, "/dev/chaos 不存在" end
       return true
   end },
-  { name = "4.2 设置语言", body = function()
+  { name = "4.5 设置语言", body = function()
       -- 一个语言属性都没读到 => 无法判断, 按中文装
       if not lang_seen then
         set_status("语言: 未知, 按中文装", V_WARN)
@@ -645,28 +311,7 @@ local pipeline = {
       return install_step(0x19)
   end },
   { name = "5 恢复占位", body = function() return install_step(0x0A) end },
-  { name = "5.5 应用列表选项", body = function()
-      local ok, err = write_file(DATA_DIR .. "/launcher.cfg",
-          string.char(launcher_enabled and 1 or 0))
-      if not ok then return false, "无法保存应用列表选项: " .. tostring(err) end
-      -- 注册前把选项交给原生侧；关闭时仍注册 Chaos，但不加入 Launcher。
-      return send_command(0x46, launcher_enabled and 1 or 0)
-  end },
   { name = "6 注册应用", body = function() return install_step(0x13) end },
-  { name = "6.4 注入 settings", body = function()
-      local fh = io.open(DATA_DIR .. "/settings.cfg", "wb")
-      if not fh then return false, "无法保存 settings 选项" end
-      fh:write(string.char(settings_enabled and 1 or 0)); fh:close()
-      if settings_enabled then return send_settings_command() end
-      return true
-  end },
-  { name = "6.45 注入系统更新入口", body = function()
-      local ok, err = write_file(DATA_DIR .. "/system_update.cfg",
-          string.char(system_update_enabled and 1 or 0))
-      if not ok then return false, "无法保存系统更新选项: " .. tostring(err) end
-      if system_update_enabled then return send_command(0x45) end
-      return true
-  end },
   { name = "6.5 通知系统", body = function()
       -- 直接走固件自己的 notify 完整链(0x0CA81D18 注册表查询
       -- + 0x0CA81FB9 notify_installed), 实测这一条必成。
@@ -723,18 +368,11 @@ local function run_next_step(timer)
     end
 end
 
-local function start_runner(update_only)
+local function start_runner()
     step_index = 1
     local timer = lvgl.Timer {
         period = 1000, repeat_count = -1, paused = true,
         cb = function(t)
-            if update_only then
-                local called, ok, message = pcall(update_supervisor)
-                if not called then stop_runner(t, false, "更新失败: " .. tostring(ok))
-                elseif not ok then stop_runner(t, false, "更新失败: " .. tostring(message))
-                else stop_runner(t, true, message) end
-                return
-            end
             local ok, message = pcall(run_next_step, t)
             if not ok then
                 stop_runner(t, false, "运行失败: " .. tostring(message))
@@ -772,51 +410,21 @@ root:clear_flag(lvgl.FLAG.SCROLLABLE)
 root:add_flag(lvgl.FLAG.CLICKABLE)
 root:add_flag(lvgl.FLAG.EVENT_BUBBLE)
 
--- 重要: 这两个满屏层要带上与 root 同一组清零。主题给普通对象默认画 1px 边框, 而边框画在
--- 对象自己的坐标之内、纯色底让给它一圈 —— 满屏层不做这件事时, 屏幕四条边显出一圈比页底更
--- 暗的窄带, 看着就是"纯色背景没铺到边"。outline(描边画在对象之外)同理要关掉。
-local OFF_Y = 3000
-local main_view = lvgl.Object(root, {
-  w = SCR_W, h = SCR_H, outline_width = 0, border_width = 0, pad_all = 0,
-  bg_opa = lvgl.OPA(100), bg_color = V_DEEP,
-  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = 0 },
-})
-local as_view = lvgl.Object(root, {
-  w = SCR_W, h = SCR_H, outline_width = 0, border_width = 0, pad_all = 0,
-  bg_opa = lvgl.OPA(100), bg_color = V_DEEP,
-  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = OFF_Y },
-})
-local views = { main_view, as_view }
-for i = 1, #views do
-  views[i]:clear_flag(lvgl.FLAG.SCROLLABLE)
-  views[i]:add_flag(lvgl.FLAG.CLICKABLE)
-  views[i]:add_flag(lvgl.FLAG.EVENT_BUBBLE)
-end
-local function view_show(name)
-  local top = name == "as" and as_view or main_view
-  local off = name == "as" and main_view or as_view
-  top:set { align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = 0 } }
-  off:set { align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = OFF_Y } }
-end
-
-local as_label
-local function as_set(text, color)
-  if as_label then as_label:set { text = fit_status(text), text_color = color or V_TXT2 } end
-end
-
-lvgl.Label(main_view, {
+-- 标题: 一个 Label 说完, 字号与颜色建立层级(不用衬线, 原因见上面 F_BODY 的说明)
+lvgl.Label(root, {
   text = "Chaos 安装器",
   text_color = V_TXT,
-  text_font = lvgl.Font(F_BODY, 32),
-  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = -212 },
+  text_font = lvgl.Font(F_BODY, 40),
+  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = -170 },
 })
 
-local card = lvgl.Object(main_view, {
-  w = SCR_W - 32, h = 68,
+-- 状态卡片: 中间灰 + 1px 边框 + 圆角走 V_R(卡片里不再套卡片); 状态文字在卡片内居中
+local card = lvgl.Object(root, {
+  w = SCR_W - 32, h = 150,
   bg_opa = lvgl.OPA(100), bg_color = V_MID,
   border_width = 1, border_color = V_LINE2,
   radius = V_R, pad_all = 0,
-  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = -150 },
+  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = -20 },
 })
 card:clear_flag(lvgl.FLAG.SCROLLABLE)
 card:add_flag(lvgl.FLAG.EVENT_BUBBLE)
@@ -827,16 +435,23 @@ status_label = lvgl.Label(card, {
   align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = 0 },
 })
 
+-- 按钮三态查表(替代 if/elseif 链)。danger 用**同色系淡底 + 同色字 + 无边框**:
+--   Web 上那套写法是 bg-[#ff453a]/15 text-[#ff453a], 即 15% 透明度的红底配红字;
+--   LVGL 里对应 bg_color=同色 + bg_opa=OPA(15)(底下的深灰透出来, 就是 /15 的效果)。
+--   对照过两种不对的写法: "深灰底 + 红字"缺那层红底, "实心红底 + 白字"又太实。
+--   primary = 强调蓝底 + 白字(主操作)
+--   danger  = 红 15% 底 + 红字, 无边框
+--   ghost   = 深底 + 1px 边框 + 次要文字
 local BUTTON_STYLES = {
   primary = { bg = V_ACC_BG, line = V_ACC_BG, fg = V_TXT,  opa = 100, bw = 1 },
   danger  = { bg = V_ERR,    line = V_ERR,    fg = V_ERR,  opa = 15,  bw = 0 },
   ghost   = { bg = V_DEEP,   line = V_LINE2,  fg = V_TXT2, opa = 100, bw = 1 },
 }
 
-local function make_button(parent, text, y_ofs, kind, on_clicked, height)
+local function make_button(text, y_ofs, kind, on_clicked)
   local style = BUTTON_STYLES[kind] or BUTTON_STYLES.ghost
-  local b = lvgl.Object(parent, {
-    w = SCR_W - 32, h = height or 64,
+  local b = lvgl.Object(root, {
+    w = SCR_W - 32, h = 64,
     bg_opa = lvgl.OPA(style.opa),
     bg_color = style.bg,
     border_width = style.bw,
@@ -847,174 +462,36 @@ local function make_button(parent, text, y_ofs, kind, on_clicked, height)
   b:clear_flag(lvgl.FLAG.SCROLLABLE)
   b:add_flag(lvgl.FLAG.CLICKABLE)
   b:add_flag(lvgl.FLAG.EVENT_BUBBLE)
-  local button_label = lvgl.Label(b, {
+  lvgl.Label(b, {
     text = text,
     text_color = style.fg,
     text_font = lvgl.Font(F_BODY, 24),
     align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = 0 },
   })
   b:onClicked(function() local ok, msg = pcall(on_clicked); if not ok then set_status("错误: " .. tostring(msg), V_ERR) end end)
-  return b, button_label
+  return b
 end
 
--- 注入设置页: 自启动(装/删)、settings 入口与系统更新页入口。
--- 两个入口的选择在运行/更新模块时生效，切换时先落盘，下次进页面保留选择。
-local saved_settings = read_all(DATA_DIR .. "/settings.cfg", "rb")
-settings_enabled = (saved_settings == nil) or saved_settings == string.char(1)
-local saved_system_update = read_all(DATA_DIR .. "/system_update.cfg", "rb")
-system_update_enabled = saved_system_update == string.char(1)
-local saved_launcher = read_all(DATA_DIR .. "/launcher.cfg", "rb")
-launcher_enabled = (saved_launcher == nil) or saved_launcher == string.char(1)
-local autostart_btn_label, settings_btn_label, system_update_btn_label, launcher_btn_label
-local function settings_refresh()
-  if autostart_btn_label then
-    autostart_btn_label:set { text = autostart_registered() and "自启动：删除" or "自启动：安装" }
-  end
-  if settings_btn_label then
-    settings_btn_label:set { text = settings_enabled and "注入 settings：开启" or "注入 settings：关闭" }
-  end
-  if system_update_btn_label then
-    system_update_btn_label:set { text = system_update_enabled and "系统更新入口：开启" or "系统更新入口：关闭" }
-  end
-  if launcher_btn_label then
-    launcher_btn_label:set { text = launcher_enabled and "应用列表显示：开启" or "应用列表显示：关闭" }
-  end
-end
 local run_button
 detect_language()
 
-run_button = make_button(main_view, "运行", -76, "primary", function()
+run_button = make_button("运行", 110, "primary", function()
   if runner then set_status("正在运行"); return end
+  if started_once then set_status("每次开机只能运行一次", V_WARN); return end
   if module_loaded() then
-    set_status("正在更新模块")
-    local started, err = start_runner(true)
-    if not started then set_status("更新失败: " .. tostring(err), V_ERR) end
+    set_status("已激活, 请重启后运行", V_WARN)
     return
   end
-  if started_once then set_status("每次开机只能运行一次", V_WARN); return end
   started_once = true
+  run_button:clear_flag(lvgl.FLAG.CLICKABLE)
   local started, err = start_runner()
   if not started then set_status("运行失败: " .. tostring(err), V_ERR) end
 end)
 
--- 重启按钮: 点一次进入 3 秒倒计时, 倒计时结束再 reboot; 运行中禁止重启。
-local restart_btn, restart_lbl
-local reboot_timer = nil
-restart_btn, restart_lbl = make_button(main_view, "重启", 80, "ghost", function()
-  if reboot_timer then return end
-  if runner then set_status("运行中, 请等待", V_WARN); return end
-  local left = 3
-  restart_btn:clear_flag(lvgl.FLAG.CLICKABLE)
-  restart_lbl:set { text = "重启 " .. left }
-  set_status("3 秒后重启", V_WARN)
-  reboot_timer = lvgl.Timer {
-    period = 1000, repeat_count = -1, paused = true,
-    cb = function(t)
-      left = left - 1
-      if left > 0 then
-        restart_lbl:set { text = "重启 " .. left }
-        set_status(left .. " 秒后重启", V_WARN)
-        return
-      end
-      t:delete()
-      reboot_timer = nil
-      if not exec("reboot") then
-        restart_btn:add_flag(lvgl.FLAG.CLICKABLE)
-        restart_lbl:set { text = "重启" }
-        set_status("重启失败, 请手动重启", V_ERR)
-      end
-    end,
-  }
-  if not reboot_timer then
-    restart_btn:add_flag(lvgl.FLAG.CLICKABLE)
-    restart_lbl:set { text = "重启" }
-    set_status("定时器创建失败", V_ERR)
-    return
-  end
-  reboot_timer:resume()
-end)
-
-make_button(main_view, "注入设置", 2, "ghost", function()
-  settings_refresh()
-  as_set(autostart_state_text(), V_TXT2)
-  view_show("as")
-end)
-
-make_button(main_view, "清除重置", 158, "danger", function()
+make_button("清除重置", 186, "danger", function()
   if runner then set_status("运行中, 请等待", V_WARN); return end
   if not wipe_armed then wipe_armed = true; set_status("再按一次以确认清除", V_WARN); return end
   wipe_armed = false
-  local ok, err = autostart_remove()
-  if not ok then set_status(tostring(err), V_ERR); return end
   exec("rm -rf " .. DATA_DIR)
   set_status("已清除, 重启后重新运行", V_OK)
 end)
-
-lvgl.Label(as_view, {
-  text = "注入设置",
-  text_color = V_TXT,
-  text_font = lvgl.Font(F_BODY, 32),
-  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = -198 },
-})
-as_label = lvgl.Label(as_view, {
-  text = "",
-  text_color = V_TXT2,
-  text_font = lvgl.Font(F_BODY, 22),
-  align = { type = lvgl.ALIGN.CENTER, x_ofs = 0, y_ofs = -152 },
-})
-
--- 行1: 自启动(点一下在"安装/删除"之间切换, 状态写在按钮文字上)
-local autostart_button, autostart_lbl = make_button(as_view, "自启动：安装", -76, "ghost", function()
-  if runner then as_set("正在运行, 请等待", V_WARN); return end
-  if autostart_registered() then
-    local ok, err = autostart_remove()
-    if not ok then as_set("失败: " .. tostring(err), V_ERR); return end
-    as_set("已删除，请到管理器重建", V_WARN)
-  else
-    local ok, err = autostart_install()
-    if not ok then as_set(tostring(err), V_ERR); return end
-    as_set("已注册，请到管理器重建", V_OK)
-  end
-  settings_refresh()
-end, 56)
-autostart_btn_label = autostart_lbl
-
--- 行2: 是否注入 settings(运行/更新模块时生效)
-local settings_button, settings_lbl = make_button(as_view, "注入 settings：开启", -12, "ghost", function()
-  if runner or started_once then as_set("请在运行前选择", V_WARN); return end
-  settings_enabled = not settings_enabled
-  local ok, err = write_file(DATA_DIR .. "/settings.cfg", string.char(settings_enabled and 1 or 0))
-  if not ok then as_set("保存失败: " .. tostring(err), V_ERR); return end
-  settings_refresh()
-  as_set(settings_enabled and "运行时注入 settings" or "运行时跳过 settings", V_TXT2)
-end, 56)
-settings_btn_label = settings_lbl
-
--- 行3: 是否在“设置 → 我的设备 → 系统更新”中追加 Chaos 入口。
-local system_update_button, system_update_lbl = make_button(as_view, "系统更新入口：关闭", 52, "ghost", function()
-  if runner or started_once then as_set("请在运行前选择", V_WARN); return end
-  system_update_enabled = not system_update_enabled
-  local ok, err = write_file(DATA_DIR .. "/system_update.cfg", string.char(system_update_enabled and 1 or 0))
-  if not ok then as_set("保存失败: " .. tostring(err), V_ERR); return end
-  settings_refresh()
-  as_set(system_update_enabled and "运行时注入系统更新入口" or "运行时跳过系统更新入口", V_TXT2)
-end, 56)
-system_update_btn_label = system_update_lbl
-
--- 行4: 是否在系统应用列表中显示 Chaos；默认开启并持久化。
-local launcher_button, launcher_lbl = make_button(as_view, "应用列表显示：开启", 116, "ghost", function()
-  if runner or started_once then as_set("请在运行前选择", V_WARN); return end
-  launcher_enabled = not launcher_enabled
-  local ok, err = write_file(DATA_DIR .. "/launcher.cfg", string.char(launcher_enabled and 1 or 0))
-  if not ok then as_set("保存失败: " .. tostring(err), V_ERR); return end
-  settings_refresh()
-  as_set(launcher_enabled and "运行时显示应用列表入口" or "运行时跳过应用列表入口", V_TXT2)
-end, 56)
-launcher_btn_label = launcher_lbl
-
-settings_refresh()
-
-make_button(as_view, "< 返回", 180, "ghost", function()
-  as_set(autostart_state_text(), V_TXT2)
-  view_show("main")
-end, 56)

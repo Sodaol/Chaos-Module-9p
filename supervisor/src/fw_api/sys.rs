@@ -39,7 +39,7 @@ pub const BRIGHT_STATE: u32 = 0x2013_F148;
 /// `brightness_set_value(v)` — 手动设亮度 0-255（内部经 clamp_manual 钳到 0-600 硬件标度）静态核对
 /// 地址必须 |1（Thumb bit0）：符号查找给出的是偶数代码地址，直接当函数指针会崩
 pub unsafe fn brightness_set_value(v: u32) {
-    let f: unsafe extern "C" fn(u32) = transmute(super::fwaddr::BRIGHTNESS_SET_VALUE as usize);
+    let f: unsafe extern "C" fn(u32) = transmute(0x0CA6_F661usize);
     f(v);
 }
 
@@ -63,7 +63,7 @@ pub unsafe fn brightness_get_auto_adjustment() -> u32 {
 
 /// `brightness_set_full_power(on)` — 全功率模式（亮屏时强制 600）静态核对
 pub unsafe fn brightness_set_full_power(on: u32) {
-    let f: unsafe extern "C" fn(u32) = transmute(super::fwaddr::BRIGHTNESS_SET_FULL_POWER as usize);
+    let f: unsafe extern "C" fn(u32) = transmute(0x0CA6_F7D9usize);
     f(on);
 }
 
@@ -72,7 +72,7 @@ pub unsafe fn brightness_set_full_power(on: u32) {
 /// 自动亮度强光路径（1200/2000）走的就是这个函数，所以 >600 的值是合法的。
 /// `brightness_set_value` 会经 `clamp_manual` 钳到 600，想突破手动上限必须用这个。
 pub unsafe fn brightness_apply_raw(v: u32) {
-    let f: unsafe extern "C" fn(u32) = transmute(super::fwaddr::BRIGHTNESS_APPLY_RAW as usize);
+    let f: unsafe extern "C" fn(u32) = transmute(0x0CA6_EF35usize);
     f(v);
 }
 
@@ -256,11 +256,6 @@ pub unsafe extern "C" fn fw_list_next(head: u32, node: u32) -> u32 {
 pub const APP_REGISTRY: u32 = 0x200E_B640;
 pub const APPN_ICON: u32 = 0x0C;     // 节点: 图标路径字符串指针
 pub const APPN_ID: u32 = 0x10;       // 节点: u16 app_id
-pub const APPN_FLAGS: u32 = 0x3C;    // 节点: 隐藏标志字节
-pub const APPN_HIDDEN: u8 = 0x01;    // 节点 +0x3C bit0: 1 = 固件认为"该应用应隐藏"
-// 取证: 桌面建记录 FUN_0c513700 `ldrb.w r2,[r0,#0x3c]; lsls r1,r2,#0x1f; bmi`
-// 命中时打 "The app need hidden" (串 0x2CB99DA0) 并返回 0, app_launcher_add 随即放弃；
-// 固件自己的 hidden_and_show cmd 0x1a 只调 app_launcher_del、不改这一位。
 
 /// `str_dup_x(s)` = strlen + malloc(len+1) + memcpy，返回堆指针(0=失败)。
 /// 0x0C1F06B4: `bl 0xc5885b0`(strlen) `bl 0xc1f903c`(malloc) `bl 0xc588db0`(memcpy)。
@@ -287,31 +282,6 @@ pub unsafe extern "C" fn fw_img_free_by_path(path: u32) {
     f(path)
 }
 
-/// 触觉反馈公共入口：`vibrate(type)`，0x0C4C56CC。STATIC_CONFIRMED(调用点实证)。
-///
-/// 取证(2026-10-16, capstone, 见 Ghidra/vibration-feasibility.md)：
-/// - launcher 翻页动画完成回调 0x0C500668 尾部 `movs r0,#0xD; bl 0x0C4C56CC`
-///   —— **全固件对它的 BL 调用点只有这一处**，type=0x0D 即"滑动翻页"官方效果；
-/// - 内部：`bl 0x0C5EAF84` 读全局 **0x2011942E**(系统震动开关, 非0=直接返回，
-///   即自动跟随用户"震动"设置) → `bl 0x0CAA0BC4` 读 **0x200EB921**(模式,
-///   ==2 用 2 否则 1) → `bl 0x0C3DB948(type, mode, 0)` 分发到 lra(/dev/lra0) 驱动链；
-/// - 固件自己的震动也是定时器上下文驱动("Vibration timeout timer created")，
-///   与 chaos tick 同上下文，非回调禁区。
-pub unsafe extern "C" fn vibrate(vib_type: u32) {
-    let f: unsafe extern "C" fn(u32) = transmute(0x0C4C_56CDusize);
-    f(vib_type)
-}
-
-/// `translate(消息号)` 取当前语言下的词，返回 NUL 结尾字符串
-///
-/// 依据: 闹钟页宿主与滚轮回调都这么用 —— 池里存 `"hour.common"`/`"min.common"` 这类
-/// 消息号，交给 `FUN_00125C38` 换成界面文本。
-/// fw_addr: 0x00125C38  (文件偏移; VA = +0x0C0C0000, 指针 |=1)
-pub unsafe extern "C" fn translate(msg_id: u32) -> *const u8 {
-    let f: unsafe extern "C" fn(u32) -> *const u8 = transmute(0x0C1E_5C39usize);
-    f(msg_id)
-}
-
 /// 桌面记录链表头(当前页)。`fw_list_head(LAUNCHER_DESKTOP_LIST) == 0` 表示此刻没有
 /// 桌面记录(例如我们正待在自己的应用里, 桌面页没在用) —— 这时 `launcher_refresh_app`
 /// 会在 0x0C513BD0 `cmp r0,#0 / beq` 直接早退: 只换指针不刷新界面 —— 换图标时
@@ -328,127 +298,6 @@ pub const LAUNCHER_DESKTOP_LIST: u32 = 0x200D_0CBC;
 ///   0x0C513C60 `bl 0xc513440`                        = launcher_rebuild_all
 /// 即改完注册表 +0x0C 之后调它，桌面就会用新路径重画。 静态核对
 pub unsafe extern "C" fn launcher_refresh_app(app_id: u32) {
-    let f: unsafe extern "C" fn(u32) = transmute(super::fwaddr::LAUNCHER_REFRESH_APP as usize);
+    let f: unsafe extern "C" fn(u32) = transmute(0x0C51_3BC1usize);
     f(app_id)
-}
-
-/// `app_launcher_del(app_id)` —— **立即**把一个应用从桌面摘掉(只删桌面记录+图标对象,
-/// 不卸载、不碰注册表)。0x0C513B2C。取证(2026-10-15, Ghidra launcher-del.md):
-///   * 身份: 函数尾字面量 0x0C513BB0->"app_launcher_del"、0x0C513BB4->
-///     "[%s] %s: app_launcher_del app"(__func__ 日志对)。
-///   * 行为: 在桌面记录链(0x200D0CBC)按 `ldrh [rec]`==app_id 找记录 ->
-///     FUN_0c517f74(rec) 删图标对象 -> 链上摘记录 -> 顺序表(0x200D0CA4)摘对应目
-///     -> free -> FUN_0c513440 relayout。
-///   * 固件自己的"隐藏应用"命令(hidden_and_show cmd 0x1a, 日志 "hidden appid %lu",
-///     0x0C5141F0)就是这一条 del; 没有任何持久化 —— 重启后是否再现完全由
-///     注册表(/data/apps.json)决定, 与 appmgr 的搬移写回正好互补。
-///   * data_init(0x0C513E90, 从 launcher.db 重建记录)只在开机总初始化
-///     (FUN_0c4c7194)跑一次, 进桌面不会撤销 del。
-pub unsafe extern "C" fn app_launcher_del(app_id: u32) {
-    let f: unsafe extern "C" fn(u32) = transmute(super::fwaddr::APP_LAUNCHER_DEL as usize);
-    f(app_id)
-}
-
-/// `app_launcher_add(app_id)` —— 把**注册表在册**的应用立即加回桌面。
-/// (与 state.rs FW_INIT_BUFFER 同址, 那边服务于 ipc 注册链; 两处都从 `fwaddr` 取, 不留两个真源)。取证:
-///   尾字面量 0x0C513B1C->"app_launcher_add"、0x0C513B24->"add icon: %s";
-///   经 FUN_0c513700 按注册表节点建记录(应用不在册/"The app need hidden"时拒绝
-///   返回0), 插入顺序表后 FUN_0c513440 relayout。
-pub unsafe extern "C" fn app_launcher_add(app_id: u32) {
-    let f: unsafe extern "C" fn(u32) = transmute(super::fwaddr::APP_LAUNCHER_ADD as usize);
-    f(app_id)
-}
-
-// ===========================================================================
-// 12. 快应用“重同步”：重建丢失的注册表节点
-// ===========================================================================
-//
-// 依据（2026-10-31，vela_ap.bin 3.101.043 反汇编）：
-//
-// proxyquickapp 自己维护一张**已装应用表**（全局 `0x20111B90`，node 在
-// `list[i]`）。手机绑定时固件走 `0xC5499B4(app_type)`：把类型存进
-// `0x20111B84` → 为 0 打 "phone not bound." 返回 → 非 0 遍历应用表，对每一项调
-// `quickapp_register_app(*(u16*)0x200D1CE6, &info)`。这就是“换绑新手机后隐藏应用
-// 全部回来”的固件机制：注册表里没有的 app 会被重新建节点 + `app_launcher_add`
-// 加图标（`registered quickapp: [%s, %s, %s]`），已有的走更新（`update icon url`）。
-//
-// 事件 9 回调 `0xC5498A4` 是同一套逻辑的变体：先比较手机类型，再遍历应用表——
-// 注册表查得到的调注册表 vtable `+0x3C(app_id, 0)`，查不到的才
-// `quickapp_register_app`。本节的 `quickapp_resync_missing()` 就抄这一支的
-// “查不到才注册”，避免动到已经正常的应用（不重建、不加图标，只补节点）。
-
-/// proxyquickapp 已装应用表所在全局（`0x20111B90` 里存表头指针）。
-pub const QUICKAPP_TABLE: u32 = 0x2011_1B90;
-
-/// “下一个 app_id” 的 16 位计数器（`quickapp_register_app` 成功后自增）。
-pub const QUICKAPP_NEXT_ID: u32 = 0x200D_1CE6;
-
-/// `quickapp_app_count()` —— 已装应用数量，`0xC54A560`；表未初始化返回 0。
-pub unsafe fn quickapp_app_count() -> i32 {
-    let f: unsafe extern "C" fn() -> i32 = transmute(0x0C54_A561usize);
-    f()
-}
-
-/// `quickapp_app_item(i, out)` —— 把第 i 项的信息结构写到 `out`（≥0x24 字节）。
-/// `0xC54A818`：成功返回 0，越界/失败返回 -1。结构布局（无符号意义，原样转交）：
-///   +0x00 应用对象（首字段为包名字符串）  +0x04 按名查表结果
-///   +0x08 obj+0x80   +0x0C obj+0xC0（图标路径）  +0x10 obj+0x10C
-///   +0x14 obj+0x100  +0x18/+0x19/+0x1A 三个标志字节
-pub unsafe fn quickapp_app_item(i: u32, out: *mut u8) -> i32 {
-    let f: unsafe extern "C" fn(u32, *mut u8) -> i32 = transmute(0x0C54_A819usize);
-    f(i, out)
-}
-
-/// `quickapp_register_app(app_id, info)` —— 注册（或更新）一个快应用。`0x0C549678`。
-/// 返回 0 表示成功。**会**在注册表里新建节点并 `app_launcher_add` 加桌面图标；
-/// 名字已存在且节点 `+0x14` 非 0 时只走更新（`app_launcher_update`）。
-pub unsafe fn quickapp_register_app(app_id: u16, info: *const u8) -> i32 {
-    let f: unsafe extern "C" fn(u16, *const u8) -> i32 = transmute(0x0C54_9679usize);
-    f(app_id, info)
-}
-
-/// 注册表“按名字查节点”的 vtable 入口：`[[APP_REGISTRY+0x18]+0x0C](key)`。
-/// 与 `0xC5498A4`、`0xC513BE8` 里的用法逐字一致；key 就是信息结构 `+0x00`。
-pub unsafe fn quickapp_registry_find(key: *const u8) -> u32 {
-    let vb = crate::mem::rd32((APP_REGISTRY + 0x18) as *const u32);
-    if vb == 0 || !crate::mem::plausible_ptr(vb) { return 0; }
-    let fp = crate::mem::rd32((vb + 0x0C) as *const u32);
-    if fp == 0 || !crate::mem::plausible_ptr(fp) { return 0; }
-    let f: unsafe extern "C" fn(*const u8) -> u32 = transmute(fp as usize);
-    f(key)
-}
-
-/// 遍历已装应用表，**只给注册表里查不到的 app 补节点**，返回 `(扫描数, 补建数)`。
-///
-/// 用途：深度隐藏把条目搬进 `apps.json_hide` 后重启，固件不会为这些应用建节点，
-/// 于是既没有图标也无法启动。本函数在运行期按固件的“重同步”路径把节点补回来；
-/// 补完 Chaos 再调 `app_launcher_del` 摘图标即可得到“隐藏但有节点、可被启动”的状态。
-///
-/// 安全前提：proxyquickapp 已初始化（`quickapp_app_count() > 0`）；在 UI/tick
-/// 线程调用（与 `app_launcher_add/del` 同上下文）。
-pub unsafe fn quickapp_resync_missing() -> (u32, u32) {
-    let vb = crate::mem::rd32((APP_REGISTRY + 0x18) as *const u32);
-    if vb == 0 || !crate::mem::plausible_ptr(vb) { return (0, 0); }
-    let n = quickapp_app_count();
-    if n <= 0 { return (0, 0); }
-    // 数量异常大说明表还没初始化好, 宁可不做也不能照着一个垃圾值循环。
-    let n = if n > 512 { 512 } else { n };
-    let mut total = 0u32;
-    let mut rebuilt = 0u32;
-    let mut i = 0i32;
-    while i < n {
-        let mut info = [0u8; 0x2c];
-        if quickapp_app_item(i as u32, info.as_mut_ptr()) == 0 {
-            total += 1;
-            let key = crate::mem::rd32(info.as_ptr() as *const u32);
-            if key != 0 && crate::mem::safe_ptr(key) && quickapp_registry_find(key as *const u8) == 0 {
-                let id = crate::mem::rd16(QUICKAPP_NEXT_ID as *const u16);
-                if quickapp_register_app(id, info.as_ptr()) == 0 {
-                    rebuilt += 1;
-                }
-            }
-        }
-        i += 1;
-    }
-    (total, rebuilt)
 }

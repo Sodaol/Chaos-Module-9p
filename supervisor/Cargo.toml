@@ -1,17 +1,11 @@
 [package]
 name = "chaos_sup"
-version = "1.1.0"
+version = "0.1.0"
 edition = "2021"
 
 [lib]
 crate-type = ["staticlib"]
 path = "src/lib.rs"
-
-[features]
-# 默认编 3.101.043。fw-p65 选 Redmi Watch 6 那一档固件地址，
-# 在地址表覆盖齐之前被 `src/fw_api/fwaddr.rs` 里的 compile_error 挡着（见那份文件的迁入规则）。
-default = []
-fw-p65 = []
 
 [profile.release]
 panic = "abort"
@@ -21,3 +15,9 @@ codegen-units = 1
 debug = false
 
 [dependencies]
+
+[features]
+default = []
+n67 = []
+
+settings-egg = ["n67"]

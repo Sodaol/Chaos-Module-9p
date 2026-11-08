@@ -1,0 +1,409 @@
+/* Verified N67 3.1.190 registrar and independent timer bridge. */
+typedef unsigned int   u32;
+typedef signed   int   s32;
+typedef unsigned short u16;
+typedef signed   short s16;
+typedef unsigned char  u8;
+typedef struct {u32 magic;} bt_cfg_t;
+typedef struct bt_ui_s bt_ui_t;
+typedef struct {
+    u32 magic;        
+    u32 stage;        
+
+    u32 mode;         
+    u32 app_register; 
+    u32 app_find;     
+    u32 page_find;    
+    u32 launcher_add; 
+    u32 app;          
+    u32 page;         
+    u32 icons;        
+    u32 app_id;       
+    u32 page_id;      
+    u32 ticks;        
+    u32 launcher;     
+    
+    u32 list_w;       
+    u32 iface_w;      
+    u32 in_list;      
+    u32 list_n;       
+    u32 tile;         
+    u32 add_tries;    
+    u32 cfg;          
+                      
+    u32 ui;           
+    u32 refreshes;    
+    volatile u32 bcrumb; 
+} bt_reg_t;
+struct bt_ui_s {
+    u32 magic, page, obj_create, label_create, label_set_text;
+    u32 set_size, set_prop, add_flag, clear_flag, font, text, w, h;
+    volatile u32 root, label, parent;
+    u32 status, creates, resumes, pauses, destroys, sigs;
+    u32 last_sig, last_sig_arg, last_ret, align, cfg;
+    u32 status_buf, status_cap, reg, shows;
+    volatile u32 build;
+    u32 table, runtime;
+};
+#define BT_REG_MAGIC 0x52474554u   
+#define BT_ENTRY_TILE_OFF 0x10u    
+#define BT_LINK_OFF       0x18u    
+#define BT_LIST_MAX       160u     
+#define BT_REG_SIZE 0x60u
+#define BT_BC(r, n) ((r)->bcrumb = (u32)(n))
+#define BT_APP_SENTINEL  (*(volatile u32 *)BT_APP_LIST_W)  
+#define BT_APP_LIST_W    0x200A1DD0u  
+#define BT_APP_STRMAP_W  (BT_APP_LIST_W + 0x10u)  
+#define BT_APP_COUNT_W   (BT_APP_LIST_W + 0x08u)  
+#define BT_APP_ELEMS_W   (BT_APP_LIST_W + 0x0Cu)  
+#define BT_PAGE_MGR_W    0x200A1D3Cu  
+#define BT_PAGE_HOOK_W   (BT_PAGE_MGR_W + 0x0Cu)  
+#define BT_PAGE_SENTINEL 0x200A0204u  
+#define BT_RET_SENTINEL  20u
+#define BT_RET_STRMAP    21u
+#define BT_RET_LIST      22u
+#define BT_RET_ARRAY     23u
+#define BT_RET_COUNTS    24u
+#define BT_RET_PAGEMGR   25u
+#define BT_RET_PAGETAKEN 26u
+#define BT_RET_NOAPP     27u        
+#define BT_RET_BADID     28u        
+#define BT_RET_BADFN     29u        
+#define BT_RET_BADPAGE   30u        
+#define BT_RET_FIRST_GATE 20u
+#define BT_ADD_TRIES_MAX 80u
+#define BT_UI_MAGIC 0x4955425Au
+#define BT_UI_SIZE 0x88u
+
+static void bt_ui_show(bt_ui_t *, bt_cfg_t *);
+static u32 bt_ui_step(bt_ui_t *, bt_cfg_t *);
+u32 bt_magic(void)
+{
+    return 0x4D544C42u;   
+
+
+}
+static u32 bt_valid_ptr(u32 p)
+{
+#ifdef BT_HOST_TEST
+    return p != 0u && (p & 3u) == 0u && p < 0x2000000u;
+#endif
+    if ((p & 3u) != 0u)                       return 0u;
+    if (p >= 0x20000000u && p < 0x20100000u)  return 1u;
+    if (p >= 0x3c000020u && p < 0x3efffff8u)  return 1u;
+    return 0u;
+}
+static u32 bt_registry_ready(void)
+{
+    u32 sent, n, prev, count, elems, sum;
+
+    if (bt_valid_ptr(BT_APP_SENTINEL) == 0u)                    return BT_RET_SENTINEL;
+    if (bt_valid_ptr(*(volatile u32 *)BT_APP_STRMAP_W) == 0u)  return BT_RET_STRMAP;
+
+    sent  = BT_APP_SENTINEL;
+    prev  = sent;
+    count = 0u;
+    sum   = 0u;
+    n     = *(volatile u32 *)(sent + 4u);
+
+    while (n != sent) {
+        if (count >= 96u)                                     return BT_RET_LIST;
+        if (bt_valid_ptr(n) == 0u)                            return BT_RET_LIST;
+        if (*(volatile u32 *)n != prev)                       return BT_RET_LIST;
+        if (bt_valid_ptr(*(volatile u32 *)(n + 4u)) == 0u)    return BT_RET_LIST;
+        if (bt_valid_ptr(*(volatile u32 *)(n + 0x2Cu)) == 0u) return BT_RET_ARRAY;
+        elems = (u32)*(volatile u16 *)(*(volatile u32 *)(n + 0x2Cu));
+        if (elems > 64u)                                      return BT_RET_ARRAY;
+        sum += elems;
+        count++;
+        prev = n;
+        n = *(volatile u32 *)(n + 4u);
+    }
+    
+
+
+    if (count != 0u) {
+        if (*(volatile u32 *)(prev + 4u) != sent)             return BT_RET_LIST;
+        if (count != (u32)*(volatile u16 *)BT_APP_COUNT_W)    return BT_RET_COUNTS;
+        if (sum   != (u32)*(volatile u16 *)BT_APP_ELEMS_W)    return BT_RET_COUNTS;
+    }
+    if (*(volatile u32 *)BT_PAGE_MGR_W != BT_PAGE_SENTINEL)   return BT_RET_PAGEMGR;
+    if (*(volatile u32 *)BT_PAGE_HOOK_W == 0u)                return BT_RET_PAGEMGR;
+    return 0u;
+}
+static u32 bt_list_find(u32 list_w, u32 app_id, u32 *out_n, u32 *out_link)
+{
+    u32 link, e, prev, n;
+    u32 want = app_id & 0xFFFFu;
+
+    if (out_n)    *out_n    = 0u;
+    if (out_link) *out_link = 0u;
+    if (list_w == 0u) return 0u;
+
+    link = *(volatile u32 *)list_w;
+    if (out_link) *out_link = link;
+    
+
+
+
+
+
+
+
+
+
+
+    if (link != BT_LINK_OFF) return 0u;
+
+    e    = *(volatile u32 *)(list_w + 4u);      
+    prev = 0u;
+    n    = 0u;
+
+    while (e != 0u) {
+        if (n >= BT_LIST_MAX)              break;
+        if (bt_valid_ptr(e) == 0u)         break;
+        if (bt_valid_ptr(e + link) == 0u)  break;
+        if (bt_valid_ptr(e + link + 4u) == 0u) break;
+        if (*(volatile u32 *)(e + link) != prev) break;   
+        n++;
+        if ((u32)*(volatile u16 *)e == want) {
+            if (out_n) *out_n = n;
+            return e;
+        }
+        prev = e;
+        e = *(volatile u32 *)(e + link + 4u);             
+    }
+    if (out_n) *out_n = n;
+    return 0u;
+}
+static u32 bt_iface_ok(u32 iface_w)
+{
+    u32 iface, find_fn;
+
+    if (iface_w == 0u) return 0u;
+    iface = *(volatile u32 *)iface_w;
+    if (iface == 0u) return 0u;
+    find_fn = *(volatile u32 *)(iface + 4u);
+    if (find_fn == 0u) return 0u;
+    
+    if ((find_fn & 1u) == 0u) return 0u;
+    return 1u;
+}
+u32 bt_reg_tick(u32 *timer)
+{
+    bt_reg_t *r;
+    u32 why;
+    
+
+
+
+    u32 link = 0u;
+    u32 ui_addr;
+    u32 add_fn;
+    u32 node;
+    u32 st;
+
+    if (timer == 0)                            return 1u;
+    r = (bt_reg_t *)timer[3];                  
+    if (r == 0)                                return 2u;
+    if (r->magic != BT_REG_MAGIC)              return 3u;
+
+    r->ticks++;
+    BT_BC(r, 1u);
+
+    
+
+
+
+
+
+
+
+
+
+    if (r->stage >= 2u && r->stage < BT_RET_FIRST_GATE) {
+    launcher_half:
+        BT_BC(r, 10u);
+
+        
+        BT_BC(r, 11u);
+        r->in_list = bt_list_find(r->list_w, r->app_id, &r->list_n, &link);
+        BT_BC(r, 12u);
+
+        r->launcher = link;
+
+        if (r->in_list == 0u) {
+            add_fn = r->launcher_add;
+            if (r->mode < 2u) {
+                BT_BC(r, 17u);                 
+            } else if (r->add_tries >= BT_ADD_TRIES_MAX) {
+                BT_BC(r, 18u);
+            } else if (add_fn == 0u || (add_fn & 1u) == 0u) {
+                
+
+
+
+
+
+
+                BT_BC(r, 20u);
+            } else if (bt_iface_ok(r->iface_w) == 0u) {
+                
+
+                BT_BC(r, 19u);
+            } else {
+                BT_BC(r, 13u);
+                ((void (*)(u32))add_fn)(r->app_id);
+                BT_BC(r, 14u);
+                r->add_tries++;
+                
+
+                BT_BC(r, 15u);
+                r->in_list = bt_list_find(r->list_w, r->app_id, &r->list_n, &link);
+                r->launcher = link;
+                BT_BC(r, 16u);
+            }
+        }
+
+        if (r->in_list != 0u) {
+            r->tile  = *(volatile u32 *)(r->in_list + BT_ENTRY_TILE_OFF);
+            r->stage = 3u;
+        }
+
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        ui_addr = r->ui;
+        if (ui_addr != 0u) {
+            r->refreshes++;
+            BT_BC(r, 30u);
+            st = bt_ui_step((bt_ui_t *)ui_addr, (bt_cfg_t *)r->cfg);
+            BT_BC(r, 60u + st);
+        }
+        return 0u;
+    }
+
+    
+
+
+
+    BT_BC(r, 40u);
+    why = bt_registry_ready();
+    BT_BC(r, 41u);
+    if (why != 0u) { r->stage = why; return 0u; }
+
+    BT_BC(r, 42u);
+    if (((u32 (*)(u32))r->app_find)(r->app_id) != 0u) {
+        r->stage = 2u;                                   
+        BT_BC(r, 48u);
+        goto launcher_half;      
+    }
+    BT_BC(r, 43u);
+
+    BT_BC(r, 44u);
+    if (((u32 (*)(u32))r->page_find)(r->page_id) != 0u) {
+        r->stage = BT_RET_PAGETAKEN;
+        BT_BC(r, 48u);
+        return 0u;
+    }
+    BT_BC(r, 45u);
+
+    r->stage = 1u;                                           
+    BT_BC(r, 46u);
+    ((void (*)(u32, u32, u32))r->app_register)(r->app, r->icons, 1u);
+    BT_BC(r, 47u);
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    node = ((u32 (*)(u32))r->app_find)(r->app_id);
+    if (node == 0u || bt_valid_ptr(node) == 0u) {
+        r->stage = BT_RET_NOAPP;
+        BT_BC(r, 48u);
+        return 0u;
+    }
+    if ((u32)*(volatile u16 *)(node + 0x10u) != (r->app_id & 0xFFFFu)) {
+        r->stage = BT_RET_BADID;
+        BT_BC(r, 48u);
+        return 0u;
+    }
+    if (*(volatile u32 *)(node + 0x1Cu) != *(volatile u32 *)(r->app + 0x1Cu)) {
+        r->stage = BT_RET_BADFN;
+        BT_BC(r, 48u);
+        return 0u;
+    }
+    if (((u32 (*)(u32))r->page_find)(r->page_id) != r->page) {
+        r->stage = BT_RET_BADPAGE;
+        BT_BC(r, 48u);
+        return 0u;
+    }
+
+    r->stage = 2u;
+    BT_BC(r, 48u);
+    goto launcher_half;          
+}
+
+#define BT_TIMER_MAGIC 0x544D425Au
+typedef struct {
+    u32 magic, create, callback, period, context;
+    volatile u32 timer;
+    volatile u32 status;
+} bt_timer_bridge_t;
+u32 bt_timer_bootstrap(u32 *lua_timer, bt_timer_bridge_t *b)
+{
+    u32 timer;
+    if (lua_timer == 0 || b == 0 || b->magic != BT_TIMER_MAGIC) return 1u;
+    if (b->create == 0u || (b->callback & 1u) == 0u || b->period == 0u)
+        return 2u;
+    if (b->timer == 0u) {
+        b->status = 1u;
+        timer = ((u32 (*)(u32, u32, u32))b->create)
+                    (b->callback, b->period, b->context);
+        if (timer == 0u) { b->status = 3u; return 3u; }
+        b->timer = timer;
+    }
+    b->status = 2u;
+    
+    ((volatile u8 *)lua_timer)[0x14] |= 1u;
+    return 0u;
+}

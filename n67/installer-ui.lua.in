@@ -1,0 +1,45 @@
+-- Layout adapted from WenHuaYiYang/Chaos-Module at
+-- 545311023e31404bb775e9ca6b33740c89f3a5b4 (AGPL-3.0).
+local SCR_W,SCR_H=336,480
+local root=lvgl.Object(nil,{w=SCR_W,h=SCR_H,bg_color=0x1C1C1E,bg_opa=lvgl.OPA(100),outline_width=0,border_width=0,pad_all=0})
+root:clear_flag(lvgl.FLAG.SCROLLABLE | lvgl.FLAG.PRESS_LOCK)
+root:add_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE)
+local title_font,body=lvgl.Font('MiSans-Regular',32),lvgl.Font('MiSans-Regular',24)
+local version_font=lvgl.Font('MiSans-Regular',18)
+local function view()
+ local o=lvgl.Object(root,{w=SCR_W,h=SCR_H,bg_color=0x1C1C1E,bg_opa=lvgl.OPA(100),outline_width=0,border_width=0,pad_all=0})
+ o:clear_flag(lvgl.FLAG.SCROLLABLE | lvgl.FLAG.PRESS_LOCK)
+ o:add_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE);return o
+end
+local main_view,settings_view=view(),view()
+local function view_show(settings)
+ main_view:set{align={type=lvgl.ALIGN.TOP_LEFT,x_ofs=0,y_ofs=settings and 3000 or 0}}
+ settings_view:set{align={type=lvgl.ALIGN.TOP_LEFT,x_ofs=0,y_ofs=settings and 0 or 3000}}
+end
+view_show(false)
+local function centered(parent,text,y,font,color)
+ local o=lvgl.Label(parent,{text=text,text_font=font,text_color=color,align={type=lvgl.ALIGN.CENTER,x_ofs=0,y_ofs=y}})
+ o:clear_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.PRESS_LOCK)
+ o:add_flag(lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE);return o
+end
+centered(main_view,'Chaos 安装器',-212,title_font,0xF2F2F2)
+local card=lvgl.Object(main_view,{w=SCR_W-32,h=68,bg_color=0x2C2C2E,bg_opa=lvgl.OPA(100),border_width=1,border_color=0x2A2A2C,radius=24,pad_all=0,align={type=lvgl.ALIGN.CENTER,x_ofs=0,y_ofs=-150}})
+card:clear_flag(lvgl.FLAG.SCROLLABLE | lvgl.FLAG.PRESS_LOCK)
+card:add_flag(lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE)
+local compatibility=lvgl.Label(card,{text='N67 · 3.1.190',w=280,h=48,text_font=version_font,text_color=0xB3B3B3,text_align=2,align={type=lvgl.ALIGN.CENTER,x_ofs=0,y_ofs=0}})
+compatibility:clear_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.PRESS_LOCK)
+compatibility:add_flag(lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE)
+local function button(parent,text,y,kind)
+ local bg=kind=='primary' and 0x2563EB or kind=='danger' and 0xFF453A or 0x1C1C1E
+ local o=lvgl.Object(parent,{w=SCR_W-32,h=64,bg_color=bg,bg_opa=lvgl.OPA(kind=='danger' and 15 or 100),border_width=kind=='primary' and 0 or 2,border_color=kind=='primary' and bg or 0x60646C,radius=24,pad_all=0,align={type=lvgl.ALIGN.CENTER,x_ofs=0,y_ofs=y}})
+ o:clear_flag(lvgl.FLAG.SCROLLABLE | lvgl.FLAG.PRESS_LOCK)
+ o:add_flag(lvgl.FLAG.CLICKABLE | lvgl.FLAG.EVENT_BUBBLE | lvgl.FLAG.GESTURE_BUBBLE)
+ return o,centered(o,text,0,body,kind=='danger' and 0xFF453A or kind=='primary' and 0xF2F2F2 or 0xB3B3B3)
+end
+local install,caption=button(main_view,'运行',-76,'primary')
+local settings_open=button(main_view,'注入设置',2,'ghost')
+centered(settings_view,'注入设置',-198,title_font,0xF2F2F2)
+centered(settings_view,'N67 · 3.1.190',-152,version_font,0xB3B3B3)
+local settings_back=button(settings_view,'< 返回',78,'ghost')
+centered(settings_view,'自动载入仅限安装器表盘',116,version_font,0xB3B3B3)
+centered(settings_view,'入口选择在运行前保存',140,version_font,0x666666)

@@ -1,0 +1,29 @@
+local function load_module()
+
+  if module_ready then return end
+
+  assert(#MODULE_BIN==MODULE_SIZE,'payload size')
+
+  mark('复制原生模块')
+
+  if MODULE_BLOCK==0 then MODULE_BLOCK=native(MALLOC,((MODULE_SIZE+255)//256)*256) end
+
+  assert(heap(MODULE_BLOCK,MODULE_SIZE),'module allocation')
+
+  own(MODULE_BLOCK,(MODULE_SIZE+3)&~3)
+
+  -- The pinned Lua string is temporary executable storage for the audited
+  -- self-contained copy/sync prefix. The resident timer always uses the heap
+  -- copy below, which survives unloading this watchface and Lua collection.
+  local src,owner=owned_string(MODULE_BIN)
+  EXEC=src-0x20000000
+  sync_code(src,BOOTSTRAP_SIZE)
+  assert(native(fn(OFF_COPY),MODULE_BLOCK,src,MODULE_SIZE)==MODULE_BLOCK and #owner==MODULE_SIZE,'bootstrap copy')
+  assert(native(fn(OFF_SYNC),MODULE_BLOCK,MODULE_SIZE)==MODULE_SIZE,'bootstrap sync')
+  EXEC=MODULE_BLOCK-0x20000000
+
+  assert(native(fn(OFF_MAGIC))==0x4D544C42,'native magic')
+
+  module_ready=true
+
+end

@@ -30,15 +30,6 @@ case $out in
 esac
 
 cd "$src"
-
-# 关于页的“编译时间”：以前没人设这个变量，option_env! 拿不到就显示 unknown。
-# 这里给本地构建兜底；CI 会显式传同一个变量，保证发布产物时间可追溯。
-if [ -z "${CHAOS_BUILD_TIME:-}" ]; then
-  CHAOS_BUILD_TIME=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M" 2>/dev/null || true)
-  [ -n "$CHAOS_BUILD_TIME" ] || CHAOS_BUILD_TIME=unknown
-  export CHAOS_BUILD_TIME
-fi
-
 RUSTFLAGS="-C target-cpu=cortex-m33 -C target-feature=-fpregs" \
   cargo +nightly build --release --target thumbv8m.main-none-eabi \
     -Z build-std=core,compiler_builtins
@@ -51,23 +42,6 @@ echo "rust-lld: $lld"
 "$lld" -flavor gnu -r --gc-sections -u module_main -u chaos_ctor \
        -T "$here/merge_sections.ld" -o "$out" "$lib"
 
-# 本机可能没有 python3: 有就用原脚本, 没有就用同逻辑的 node 移植。
-if command -v python3 >/dev/null 2>&1; then
-  python3 "$here/fix_ko_layout.py" "$out"
-else
-  node "$here/fix_ko_layout.js" "$out"
-fi
-
-# 体积瘦身(S1): 局部符号名置空。加载器做重定位只认 symtab 下标, 不需要局部符号名;
-# 本模块未定义符号为 0, 保留名字的只有全局/弱符号导出。省 ~56KB, 见 docs/22。
-# 需要保留完整符号名调试时: CHAOS_NO_SLIM=1 sh tools/build_ko.sh
-if [ "${CHAOS_NO_SLIM:-0}" != "1" ]; then
-  node "$here/ko_slim.js" "$out"
-fi
-
-if command -v python3 >/dev/null 2>&1; then
-  python3 "$here/verify_chaos_ko.py" "$out"
-else
-  node "$here/verify_chaos_ko.js" "$out"
-fi
+python3 "$here/fix_ko_layout.py" "$out"
+python3 "$here/verify_chaos_ko.py" "$out"
 echo "OK: $out"

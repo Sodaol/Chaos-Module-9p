@@ -1,0 +1,1021 @@
+
+
+
+
+
+
+
+
+use core::sync::atomic::{AtomicU32, Ordering};
+use crate::*;
+
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageError {
+    
+    ContentFailed,
+    
+    RowFailed(usize),
+}
+
+pub(crate) type PageResult = Result<(), PageError>;
+
+
+
+
+pub(crate) struct PageCtx {
+    pub content: u32,
+    pub title: u32,
+    pub rows: *mut u32,
+}
+
+
+
+
+pub(crate) struct RowSpec<'a> {
+    pub text: &'a [u8],
+    pub sub: *const u8,
+    pub trailing: u32,
+    pub clickable: bool,
+}
+
+impl<'a> RowSpec<'a> {
+    
+    pub fn clickable(text: &'a [u8]) -> Self {
+        Self { text, sub: core::ptr::null(), trailing: 0, clickable: true }
+    }
+    
+    pub fn display(text: &'a [u8], sub: *const u8) -> Self {
+        Self { text, sub, trailing: 0, clickable: false }
+    }
+    
+    
+    
+    
+    pub fn tap(text: &'a [u8], sub: *const u8) -> Self {
+        Self { text, sub, trailing: 0, clickable: true }
+    }
+    
+    pub fn switch(text: &'a [u8]) -> Self {
+        Self { text, sub: core::ptr::null(), trailing: fw_api::trailing::SWITCH, clickable: true }
+    }
+    
+    
+    
+    
+    
+    pub fn check(text: &'a [u8], sub: *const u8) -> Self {
+        Self { text, sub, trailing: fw_api::trailing::CHECKBOX, clickable: true }
+    }
+}
+
+
+
+const ROW_SUB_LB: u32 = 0x40;
+
+
+
+
+pub(crate) unsafe fn build_row(ctx: &PageCtx, prev: u32, slot: usize, spec: &RowSpec) -> u32 {
+    if slot >= fw_api::MAX_ROWS_PER_PAGE { return 0; }
+    let r = fw_api::row_create(ctx.content, spec.text.as_ptr(), spec.sub, spec.trailing);
+    if r == 0 { return 0; }
+    write_volatile(ctx.rows.add(slot), r);
+    
+    
+    if spec.trailing == fw_api::trailing::SWITCH {
+        let tobj = fw_api::row_trailing(r);
+        if tobj != 0 { fw_api::obj_add_event(tobj, row_ev_fn(slot), 0, 0); }
+        else { fw_api::obj_add_event(r, row_ev_fn(slot), 7, 0); }
+    } else if spec.clickable {
+        fw_api::obj_add_event(r, row_ev_fn(slot), 7, 0);
+        
+        
+        
+        if spec.trailing == fw_api::trailing::CHECKBOX {
+            let tobj = fw_api::row_trailing(r);
+            if tobj != 0 { fw_api::obj_add_event(tobj, row_ev_fn(slot), 0, 0); }
+        }
+    }
+    fw_api::obj_align_to(r, prev, 14, 0, 8);
+    r
+}
+
+
+pub(crate) unsafe fn build_rows(
+    ctx: &PageCtx, mut prev: u32, specs: &[(usize, RowSpec)],
+) -> Result<u32, PageError> {
+    for &(slot, ref spec) in specs {
+        let r = build_row(ctx, prev, slot, spec);
+        if r == 0 { return Err(PageError::RowFailed(slot)); }
+        prev = r;
+    }
+    Ok(prev)
+}
+
+
+
+
+pub(crate) trait Page: Sync {
+    
+    fn fill_title(&self, buf: *mut u8);
+    
+    fn title_mode(&self) -> u32 { 1 }
+    
+    fn render(&self, ctx: &PageCtx) -> PageResult;
+    
+    fn on_click(&self, idx: usize);
+    
+    fn on_switch(&self, _idx: usize) {}
+    
+    fn is_switch_row(&self, _idx: usize) -> bool { false }
+    
+    fn apply_visibility(&self) {}
+    
+    
+    fn tick(&self) {}
+    
+    fn needs_tick(&self) -> bool { false }
+}
+
+
+
+pub(crate) struct InfoPage;
+
+impl Page for InfoPage {
+    fn fill_title(&self, buf: *mut u8) {
+        
+        
+        unsafe { put_str(buf, "Chaos\0".as_bytes()); }
+    }
+    fn title_mode(&self) -> u32 { 0 }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            
+            
+            stat_fill(2);
+            let nm2 = stat_name(2);
+            let val2 = (core::ptr::addr_of!(STAT_VAL) as *const u8).add(2 * STAT_STRIDE);
+            let cpu = build_row(ctx, ctx.title, 2, &RowSpec::display(
+                core::slice::from_raw_parts(nm2, cstr_len(nm2)), val2));
+            let anchor = if cpu != 0 { cpu } else { ctx.title };
+            
+            stat_fill(0);
+            let d0 = fw_api::data_row_create(ctx.content, stat_name(0),
+                fw_api::BAR_FILL_RGB, storage_pct());
+            fw_api::data_row_place(&d0, anchor);
+            if d0.value != 0 {
+                fw_api::label_set_text(d0.value, core::ptr::addr_of!(STAT_VAL) as *const u8);
+            }
+            stat_fill(1);
+            let d1 = fw_api::data_row_create(ctx.content, stat_name(1),
+                fw_api::BAR_FILL_GREEN, mem_pct());
+            fw_api::data_row_place(&d1, d0.row);
+            if d1.value != 0 {
+                fw_api::label_set_text(d1.value,
+                    (core::ptr::addr_of!(STAT_VAL) as *const u8).add(STAT_STRIDE));
+            }
+            
+            let hp = core::ptr::addr_of_mut!(DR_HANDLES) as *mut u32;
+            write_volatile(hp.add(0), d0.row);
+            write_volatile(hp.add(1), d0.value);
+            write_volatile(hp.add(2), d0.bar);
+            write_volatile(hp.add(3), d1.row);
+            write_volatile(hp.add(4), d1.value);
+            write_volatile(hp.add(5), d1.bar);
+            
+            build_rows(ctx, d1.row, &[
+                (3, RowSpec::clickable(b"\xe6\x96\x87\xe4\xbb\xb6\xe7\xae\xa1\xe7\x90\x86\0")), 
+                (4, RowSpec::clickable(b"\xe8\xa1\xa8\xe7\x9b\x98\xe7\xae\xa1\xe7\x90\x86\0")), 
+                (5, RowSpec::clickable(b"\xe4\xba\xae\xe5\xba\xa6\xe6\x8e\xa7\xe5\x88\xb6\0")), 
+                (6, RowSpec::clickable(b"\xe7\xb3\xbb\xe7\xbb\x9f\xe7\xbe\x8e\xe5\x8c\x96\0")), 
+            ])?;
+            
+            
+            
+            let _ = cpu;
+            Ok(())
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            match idx {
+                3 => {
+                    let rp = core::ptr::addr_of_mut!(PATH_STACK) as *mut u8;
+                    write_volatile(rp.add(0), b'/');
+                    write_volatile(rp.add(1), 0u8);
+                    write_volatile(core::ptr::addr_of_mut!(DIR_WIN_SAVE).cast::<u32>(), 0);
+                    nav_goto(1, 0);
+                }
+                4 => nav_goto(10, 0),
+                5 => nav_goto(11, 0),
+                6 => nav_goto(13, 0),
+                _ => {} 
+            }
+        }
+    }
+
+    fn needs_tick(&self) -> bool { true }
+
+    fn tick(&self) {
+        unsafe {
+            
+            let tk = st_rd!(STAT_TICK).wrapping_add(1);
+            st_wr!(STAT_TICK, tk);
+            if tk % 10 != 0 { return; }
+            
+            
+            
+            if !fw_api::screen_is_on() { return; }
+            if PAGES[0].built == 0 || !page_is_live(0) { return; }
+            
+            
+            static mut STAT_PREV: [[u8; STAT_STRIDE]; 3] = [[0; STAT_STRIDE]; 3];
+            static mut BAR_PREV: [i32; 2] = [-1; 2];
+            
+            unsafe fn stat_changed(row: usize) -> bool {
+                let cur = (core::ptr::addr_of!(STAT_VAL) as *const u8).add(row * STAT_STRIDE);
+                let prev = core::ptr::addr_of_mut!(STAT_PREV[row]) as *mut u8;
+                let mut i = 0usize;
+                let mut diff = false;
+                while i < STAT_STRIDE {
+                    let c = read_volatile(cur.add(i));
+                    if read_volatile(prev.add(i)) != c { diff = true; }
+                    write_volatile(prev.add(i), c);
+                    if c == 0 { break; }
+                    i += 1;
+                }
+                diff
+            }
+            let rows = page_rows_ptr(0);
+            let upd: unsafe extern "C" fn(u32, *const u8, *const u8, *const u8, i32, u8) -> i32 =
+                fw_api::row_update;
+            
+            
+            
+            
+            
+            
+            let r2 = read_volatile(rows.add(2));
+            if r2 != 0 {
+                stat_fill(2);
+                let ch2 = stat_changed(2);
+                let val = (core::ptr::addr_of!(STAT_VAL) as *const u8).add(2 * STAT_STRIDE);
+                let vl = read_volatile((r2 + ROW_SUB_LB) as *const u32);
+                if vl != 0 {
+                    if ch2 { fw_api::label_set_text(vl, val); }
+                } else {
+                    
+                    upd(r2, core::ptr::null(), stat_name(2), val, 0, 0);
+                }
+            }
+            
+            let hp = core::ptr::addr_of_mut!(DR_HANDLES) as *mut u32;
+            let bp = core::ptr::addr_of_mut!(BAR_PREV) as *mut i32;
+            let pct = [storage_pct(), mem_pct()];
+            for i in 0..2usize {
+                stat_fill(i);
+                let ch = stat_changed(i);
+                let vl = read_volatile(hp.add(i * 3 + 1));
+                if vl != 0 && ch {
+                    let val = (core::ptr::addr_of!(STAT_VAL) as *const u8).add(i * STAT_STRIDE);
+                    fw_api::label_set_text(vl, val);
+                }
+                let bar = read_volatile(hp.add(i * 3 + 2));
+                let p = pct[i] as i32;
+                if bar != 0 && read_volatile(bp.add(i)) != p {
+                    write_volatile(bp.add(i), p);
+                    fw_api::bar_set_pct(bar, pct[i]);
+                }
+            }
+
+        }
+    }
+}
+
+
+
+unsafe fn cstr_len(s: *const u8) -> usize {
+    let mut n = 0usize;
+    while read_volatile(s.add(n)) != 0 { n += 1; }
+    n
+}
+
+
+
+pub(crate) struct DirPage;
+
+impl Page for DirPage {
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe {
+            let pid = st_rd!(FG_PAGE) as usize;
+            if pid == 1 {
+                put_str(buf, "文件管理".as_bytes());
+            } else {
+                let d = pid - 1;
+                let pth = (core::ptr::addr_of!(PATH_STACK) as *const u8).add(d * 160);
+                if path_basename(pth, buf, 48) == 0 {
+                    put_str(buf, "文件管理".as_bytes());
+                }
+            }
+        }
+    }
+
+    fn render(&self, _ctx: &PageCtx) -> PageResult {
+        unsafe {
+            refresh_dir_lines();
+            let pid = st_rd!(FG_PAGE) as usize;
+            rows_layout(pid);
+            Ok(())
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            let pid = st_rd!(FG_PAGE) as usize;
+            let d = pid - 1;
+            let cnt = st_rd!(DIR_COUNT) as usize;
+            let win = st_rd!(DIR_WIN) as usize;
+            if idx <= 7 {
+                let e = win * 8 + idx;
+                if e < cnt {
+                    let names = core::ptr::addr_of!(DIR_NAMES) as *const u8;
+                    let types = core::ptr::addr_of!(DIR_TYPES) as *const u8;
+                    let dt = read_volatile(types.add(e));
+                    let cur = (core::ptr::addr_of!(PATH_STACK) as *const u8).add(d * 160);
+                    if dt == DT_DIR {
+                        if d < 3 {
+                            write_volatile((core::ptr::addr_of_mut!(DIR_WIN_SAVE) as *mut u32).add(d), win as u32);
+                            let nxt = (core::ptr::addr_of_mut!(PATH_STACK) as *mut u8).add((d + 1) * 160);
+                            path_join(nxt, cur, names.add(e * 64));
+                            write_volatile((core::ptr::addr_of_mut!(DIR_WIN_SAVE) as *mut u32).add(d + 1), 0);
+                            nav_goto((pid + 1) as u32, 0);
+                        }
+                    } else {
+                        let vp = core::ptr::addr_of_mut!(VIEW_PATH) as *mut u8;
+                        path_join(vp, cur, names.add(e * 64));
+                        st_wr!(VIEW_DT, dt);
+                        st_wr!(VIEW_BLK, 0);
+                        st_wr!(VIEW_LOADED, 0);
+                        nav_goto(7, 0);
+                    }
+                }
+            } else if idx == 8 {
+                if (win + 1) * 8 < cnt {
+                    st_wr!(DIR_WIN, (win + 1) as u32);
+                    render_req(pid);
+                }
+            } else if idx == 10 && pid == 1 {
+                nav_goto(12, 0);   
+            } else {
+                nav_back();
+            }
+        }
+    }
+
+    fn apply_visibility(&self) {
+        unsafe {
+            let pid = st_rd!(FG_PAGE) as usize;
+            let sh = fw_api::obj_set_hidden;
+            let rows = page_rows_ptr(pid);
+            let cnt = st_rd!(DIR_COUNT) as usize;
+            let win = st_rd!(DIR_WIN) as usize;
+            for r in 0..8usize {
+                let op = read_volatile(rows.add(r));
+                if op != 0 {
+                    let vis = if cnt == 0 { if r == 0 { 0u32 } else { 1u32 } }
+                              else if win * 8 + r < cnt { 0u32 } else { 1u32 };
+                    sh(op, vis);
+                }
+            }
+            let op8 = read_volatile(rows.add(8));
+            if op8 != 0 { sh(op8, if (win + 1) * 8 < cnt { 0 } else { 1 }); }
+            let op9 = read_volatile(rows.add(9));
+            if op9 != 0 { sh(op9, 0); }
+        }
+    }
+}
+
+
+
+pub(crate) struct ViewerPage;
+
+impl Page for ViewerPage {
+
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe {
+            if path_basename(core::ptr::addr_of!(VIEW_PATH) as *const u8, buf, 48) == 0 {
+                put_str(buf, "文件查看".as_bytes());
+            }
+        }
+    }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            refresh_view_text();
+            let lb = fw_api::label_create(ctx.content);
+            if lb == 0 { return Err(PageError::ContentFailed); }
+            fw_api::label_set_text(lb, core::ptr::addr_of!(VIEW_TEXT) as *const u8);
+            let sa: unsafe extern "C" fn(u32, u32, u32, u32) -> i32 = fw_api::style_apply;
+            sa(lb, FW_STYLE_MISANS_REG_24, 255, 0);
+            fw_api::obj_align_to(lb, ctx.title, 14, 0, 4);
+            PAGES[7].label = lb;
+            let r0 = build_row(ctx, lb, 0, &RowSpec::clickable("下一段\0".as_bytes()));
+            let vn = st_rd!(FILE_VIEW_N);
+            let vmore = vn >= 0 && vn < 2047;
+            let base = if vmore && r0 != 0 { r0 } else { lb };
+            let backtxt = core::slice::from_raw_parts(
+                core::ptr::addr_of!(VIEW_BACKTXT) as *const u8, cstr_len(core::ptr::addr_of!(VIEW_BACKTXT) as *const u8) + 1);
+            build_row(ctx, base, 1, &RowSpec::clickable(backtxt));   
+            Ok(())
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            match idx {
+                0 => {
+                    st_wr!(VIEW_BLK, st_rd!(VIEW_BLK) + 1);
+                    st_wr!(VIEW_LOADED, 0);
+                    render_req(7);
+                }
+                1 => nav_back(),
+                _ => {}
+            }
+        }
+    }
+
+    fn apply_visibility(&self) {
+        unsafe {
+            let sh = fw_api::obj_set_hidden;
+            let rows = page_rows_ptr(7);
+            let n = st_rd!(FILE_VIEW_N);
+            let op0 = read_volatile(rows.add(0));
+            if op0 != 0 { sh(op0, if n >= 2047 || n < 0 { 0 } else { 1 }); }
+            let op1 = read_volatile(rows.add(1));
+            if op1 != 0 { sh(op1, 0); }
+        }
+    }
+}
+
+
+
+pub(crate) struct WatchfaceListPage {
+    
+    pub pid: usize,
+}
+
+impl Page for WatchfaceListPage {
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe {
+            if self.pid == 8 { put_str(buf, "表盘切换".as_bytes()); }
+            else { put_str(buf, "摇一摇轮换".as_bytes()); }
+        }
+    }
+
+    fn render(&self, _ctx: &PageCtx) -> PageResult {
+        unsafe {
+            refresh_watchface_lines();
+            rows_layout(self.pid);
+            wf_apply_selection(self.pid);
+            Ok(())
+        }
+    }
+
+    fn is_switch_row(&self, idx: usize) -> bool { idx == 0 }
+
+    fn on_switch(&self, _idx: usize) {
+        unsafe {
+            if self.pid == 8 {
+                let v = st_rd!(WF_SHOW_BUILTIN);
+                st_wr!(WF_SHOW_BUILTIN, if v != 0 { 0 } else { 1 });
+                load_watchfaces(st_rd!(WF_SHOW_BUILTIN));
+                render_req(8);
+            } else {
+                let v = st_rd!(WF_SEL_BUILTIN);
+                st_wr!(WF_SEL_BUILTIN, if v != 0 { 0 } else { 1 });
+                load_watchfaces(st_rd!(WF_SEL_BUILTIN));
+                render_req(9);
+            }
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            if idx == 0 { return; }
+            let cnt = st_rd!(WF_COUNT) as usize;
+            let win = st_rd!(WF_WIN) as usize;
+            if idx <= 8 {
+                let e = win * 8 + (idx - 1);
+                if e < cnt {
+                    if self.pid == 8 {
+                        let sw: unsafe extern "C" fn(*const u8) -> i32 =
+                            core::mem::transmute(FW_SET_WATCHFACE as usize);
+                        let rc = sw((core::ptr::addr_of!(WF_IDS) as *const u8).add(e * 16));
+                        st_wr!(WF_SW_RC, rc);
+                        if rc == 0 {
+                            let node = read_volatile((core::ptr::addr_of!(WF_NODES) as *const u32).add(e));
+                            let rf: unsafe extern "C" fn(u32, u32) -> i32 =
+                                core::mem::transmute(FW_REFRESH_CUR_WF as usize);
+                            let rfc = rf(1, node);
+                            st_wr!(WF_RF_RC, rfc);
+                        }
+                        load_watchfaces(st_rd!(WF_SHOW_BUILTIN));
+                        st_wr!(WF_WIN, win as u32);
+                        wf_apply_selection(8);
+                    } else {
+                        let node = read_volatile((core::ptr::addr_of!(WF_NODES) as *const u32).add(e));
+                        let off = !desel_has(node);
+                        desel_set(node, off);
+                        wf_apply_selection(9);
+                    }
+                }
+            } else if idx == 9 {
+                if (win + 1) * 8 < cnt {
+                    st_wr!(WF_WIN, (win + 1) as u32);
+                    render_req(self.pid);
+                }
+            } else {
+                nav_back();
+            }
+        }
+    }
+
+    fn apply_visibility(&self) {
+        unsafe {
+            let sh = fw_api::obj_set_hidden;
+            let rows = page_rows_ptr(self.pid);
+            let cnt = st_rd!(WF_COUNT) as usize;
+            let win = st_rd!(WF_WIN) as usize;
+            let sw0 = read_volatile(rows.add(0));
+            if sw0 != 0 { sh(sw0, 0); }
+            for r in 0..8usize {
+                let op = read_volatile(rows.add(r + 1));
+                if op != 0 {
+                    let vis = if cnt == 0 { if r == 0 { 0u32 } else { 1u32 } }
+                              else if win * 8 + r < cnt { 0u32 } else { 1u32 };
+                    sh(op, vis);
+                }
+            }
+            let op9 = read_volatile(rows.add(9));
+            if op9 != 0 { sh(op9, if (win + 1) * 8 < cnt { 0 } else { 1 }); }
+            let op10 = read_volatile(rows.add(10));
+            if op10 != 0 { sh(op10, 0); }
+        }
+    }
+}
+
+
+
+pub(crate) struct WfMgmtPage {
+    
+    pub shake_en: AtomicU32,
+}
+
+impl Page for WfMgmtPage {
+
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe { put_str(buf, "表盘管理".as_bytes()); }
+    }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            let mut tbuf: [u8; 88] = [0; 88];
+            shake_toggle_text(tbuf.as_mut_ptr());
+            let tlen = cstr_len(tbuf.as_ptr());
+            let text = core::slice::from_raw_parts(tbuf.as_ptr(), tlen + 1);
+            let prev = build_rows(ctx, ctx.title, &[
+                (0, RowSpec::switch(text)),
+                (1, RowSpec::clickable("摇一摇轮换\0".as_bytes())),
+                (2, RowSpec::clickable("表盘切换\0".as_bytes())),
+            ])?;
+            
+            let rows = page_rows_ptr(10);
+            let s0 = read_volatile(rows.add(0));
+            if s0 != 0 {
+                let upd = fw_api::row_update;
+                let en = self.shake_en.load(Ordering::Relaxed);
+                upd(s0, core::ptr::null(), tbuf.as_ptr(), core::ptr::null(), 0, en as u8);
+            }
+            let _ = prev;
+            Ok(())
+        }
+    }
+
+    fn is_switch_row(&self, idx: usize) -> bool { idx == 0 }
+
+    fn on_switch(&self, _idx: usize) {
+        let en = self.shake_en.load(Ordering::Relaxed);
+        self.shake_en.store(if en != 0 { 0 } else { 1 }, Ordering::Relaxed);
+        
+        unsafe {
+            st_wr!(SHAKE_EN, self.shake_en.load(Ordering::Relaxed));
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            match idx {
+                1 => nav_goto(9, 0),
+                2 => {
+                    load_watchfaces(st_rd!(WF_SHOW_BUILTIN));
+                    nav_goto(8, 0);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+
+
+pub(crate) struct BrightnessPage {
+    pub req: AtomicU32,
+    pub req_val: AtomicU32,
+}
+
+impl Page for BrightnessPage {
+
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe { put_str(buf, "亮度控制".as_bytes()); }
+    }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            let cur = fw_api::brightness_get_target();
+            st_wr!(BRIGHT_VAL, cur);
+            let auto_on = fw_api::brightness_get_auto_adjustment();
+            bright_fill_status();
+            build_rows(ctx, ctx.title, &[
+                (0, RowSpec::display("当前亮度\0".as_bytes(), core::ptr::addr_of!(BRIGHT_STATUS) as *const u8)),
+                (1, RowSpec::clickable(b"600nit\0")),
+                (2, RowSpec::clickable(b"2000nit\0")),
+                (3, RowSpec::switch("自动亮度\0".as_bytes())),
+            ])?;
+            
+            let rows = page_rows_ptr(11);
+            let r3 = read_volatile(rows.add(3));
+            if r3 != 0 {
+                let upd = fw_api::row_update;
+                upd(r3, core::ptr::null(), "自动亮度\0".as_bytes().as_ptr(),
+                    core::ptr::null(), 0, auto_on as u8);
+            }
+            Ok(())
+        }
+    }
+
+    fn is_switch_row(&self, idx: usize) -> bool { idx == 3 }
+
+    fn on_click(&self, idx: usize) {
+        match idx {
+            1 => {
+                self.req_val.store(600, Ordering::Relaxed);
+                self.req.store(4, Ordering::Relaxed);
+                unsafe {
+                    st_wr!(BRIGHT_REQ_VAL, 600);
+                    st_wr!(BRIGHT_REQ, 4);
+                }
+            }
+            2 => {
+                self.req_val.store(2000, Ordering::Relaxed);
+                self.req.store(4, Ordering::Relaxed);
+                unsafe {
+                    st_wr!(BRIGHT_REQ_VAL, 2000);
+                    st_wr!(BRIGHT_REQ, 4);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_switch(&self, _idx: usize) {
+        self.req.store(2, Ordering::Relaxed);
+        unsafe { st_wr!(BRIGHT_REQ, 2); }
+    }
+
+    fn needs_tick(&self) -> bool {
+        self.req.load(Ordering::Relaxed) != 0
+    }
+
+    fn tick(&self) {
+        unsafe {
+            let req = st_rd!(BRIGHT_REQ);
+            if req == 0 { return; }
+            st_wr!(BRIGHT_REQ, 0);
+            if req == 1 {
+                let v = st_rd!(BRIGHT_REQ_VAL);
+                fw_api::brightness_set_value(v);
+            } else if req == 2 {
+                let cur = fw_api::brightness_get_auto_adjustment();
+                let nv = if cur != 0 { 0u32 } else { 1u32 };
+                
+                
+                let target = fw_api::brightness_get_target();
+                fw_api::brightness_set_auto_adjustment(nv);
+                if nv == 0 && target > 0 {
+                    fw_api::brightness_apply_raw(target);
+                }
+            } else if req == 4 {
+                let v = st_rd!(BRIGHT_REQ_VAL);
+                fw_api::brightness_apply_raw(v);
+            }
+            
+            if PAGES[11].built == 0 || !page_is_live(11) { return; }
+            bright_fill_status();
+            let rows = page_rows_ptr(11);
+            let upd: unsafe extern "C" fn(u32, *const u8, *const u8, *const u8, i32, u8) -> i32 =
+                fw_api::row_update;
+            let r0 = read_volatile(rows.add(0));
+            if r0 != 0 {
+                upd(r0, core::ptr::null(), "当前亮度\0".as_bytes().as_ptr(),
+                    core::ptr::addr_of!(BRIGHT_STATUS) as *const u8, 0, 0);
+            }
+            let auto_on = fw_api::brightness_get_auto_adjustment() as u8;
+            let r3 = read_volatile(rows.add(3));
+            if r3 != 0 {
+                upd(r3, core::ptr::null(), "自动亮度\0".as_bytes().as_ptr(),
+                    core::ptr::null(), 0, auto_on);
+            }
+        }
+    }
+}
+
+
+
+pub(crate) struct CachePage;
+
+impl Page for CachePage {
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe { put_str(buf, "缓存清理".as_bytes()); }
+    }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            
+            if st_rd!(CACHE_HAS_RESULT) == 0 {
+                let mut files = 0u32;
+                let mut fail = 0u32;
+                cache_walk(false, &mut files, &mut fail);
+                st_wr!(CACHE_FILES, files);
+                cache_fmt_msg(if files == 0 { 2 } else { 0 }, files, 0, 0);
+            } else {
+                st_wr!(CACHE_HAS_RESULT, 0);
+            }
+            let msgp = core::ptr::addr_of!(CACHE_MSG) as *const u8;
+            let msg = core::slice::from_raw_parts(msgp, cstr_len(msgp) + 1);
+            let r0 = build_row(ctx, ctx.title, 0, &RowSpec::display(msg, core::ptr::null()));
+            let anchor = if r0 != 0 { r0 } else { ctx.title };
+            let r1 = build_row(ctx, anchor, 1,
+                &RowSpec::clickable("开始清理\0".as_bytes()));
+            if r1 == 0 { return Err(PageError::RowFailed(1)); }
+            Ok(())
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            if idx == 1 { st_wr!(CLEAN_REQ, 1); }   
+        }
+    }
+
+    fn needs_tick(&self) -> bool {
+        unsafe { st_rd!(CLEAN_REQ) != 0 }
+    }
+
+    fn tick(&self) {
+        unsafe {
+            if st_rd!(CLEAN_REQ) == 0 { return; }
+            st_wr!(CLEAN_REQ, 0);
+            
+            let before = fs_used_mb();
+            let mut files = 0u32;
+            let mut fail = 0u32;
+            cache_walk(true, &mut files, &mut fail);
+            let after = fs_used_mb();
+            let freed = if before == u32::MAX || after == u32::MAX || after >= before {
+                0
+            } else { before - after };
+            cache_fmt_msg(1, files, fail, freed);
+            st_wr!(CACHE_HAS_RESULT, 1);
+            render_req(12);
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const ICON_ROW0: usize = 0;
+
+
+unsafe fn cbuf(p: *const u8) -> &'static [u8] {
+    let n = cstr_len(p);
+    if n == 0 { return &[]; }
+    core::slice::from_raw_parts(p, n + 1)
+}
+
+
+
+pub(crate) struct BeautifyPage;
+
+impl Page for BeautifyPage {
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe { put_str(buf, "系统美化\0".as_bytes()); }
+    }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            build_rows(ctx, ctx.title, &[
+                (0, RowSpec::clickable("更换字体\0".as_bytes())),
+                (1, RowSpec::clickable("桌面图标\0".as_bytes())),
+                (2, RowSpec::clickable("返回\0".as_bytes()))])?;
+            Ok(())
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            match idx {
+                
+                0 => nav_goto(5, 0),
+                1 => nav_goto(6, 0),
+                2 => nav_back(),
+                _ => {}
+            }
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+pub(crate) struct FontListPage;
+
+
+const FONT_ROW0: usize = 0;
+
+
+
+
+impl Page for FontListPage {
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe {
+            put_str(buf, "更换字体\0".as_bytes());
+        }
+    }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            
+            font_list::popup_reset();
+            font_list::refresh();          
+            let ent = font_list::entry_shown();
+            font_list::lines_fill();
+            
+            
+            let mut last = ctx.title;
+            let mut i = 0usize;
+            while i < ent as usize {
+                let spec = RowSpec::check(cbuf(font_list::line_primary(i)),
+                                          font_list::line_secondary(i));
+                let r = build_row(ctx, last, FONT_ROW0 + i, &spec);
+                if r != 0 { last = r; }
+                i += 1;
+            }
+            
+            
+            if ent == 0 {
+                let r = build_row(ctx, last, FONT_ROW0, &RowSpec::display(
+                    "还没有投递过字体\0".as_bytes(), FONT_EMPTY_SUB.as_ptr()));
+                if r != 0 { last = r; }
+            }
+            build_rows(ctx, last, &[
+                (8, RowSpec::clickable("返回\0".as_bytes()))])?;
+            
+            
+            font_list::bind_rows(ctx.rows, FONT_ROW0, ent as usize);
+            font_list::refresh_rows();
+            Ok(())
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            match idx {
+                
+                
+                
+                0..=7 => font_list::click_row(idx),
+                8 => nav_back(),
+                _ => {}
+            }
+        }
+    }
+}
+static FONT_EMPTY_SUB: &[u8] = b"\xe5\x85\x88\xe4\xbe\xa7\xe8\xbd\xbd\xe4\xb8\x80\xe4\xb8\xaa\xe5\xad\x97\xe4\xbd\x93\xe6\x8a\x95\xe9\x80\x92\xe5\x8c\x85\0";
+
+
+
+pub(crate) struct IconSubPage;
+
+impl Page for IconSubPage {
+    fn fill_title(&self, buf: *mut u8) {
+        unsafe { put_str(buf, "桌面图标\0".as_bytes()); }
+    }
+
+    fn render(&self, ctx: &PageCtx) -> PageResult {
+        unsafe {
+            
+            
+            icon_apply::popup_reset();
+            icon_apply::refresh_packs();   
+            let ent = icon_apply::entry_shown();
+            icon_apply::lines_fill();
+            
+            
+            
+            
+            let mut last = ctx.title;
+            let mut i = 0usize;
+            while i < ent as usize {
+                let spec = RowSpec::check(cbuf(icon_apply::line_primary(i)),
+                                          icon_apply::line_secondary(i));
+                let r = build_row(ctx, last, ICON_ROW0 + i, &spec);
+                if r != 0 { last = r; }
+                i += 1;
+            }
+            build_rows(ctx, last, &[(11, RowSpec::clickable("返回\0".as_bytes()))])?;
+            
+            
+            icon_apply::bind_rows(ctx.rows, ICON_ROW0, ent as usize);
+            icon_apply::refresh_rows();
+            Ok(())
+        }
+    }
+
+    fn on_click(&self, idx: usize) {
+        unsafe {
+            match idx {
+                
+                
+                0..=9 => icon_apply::click_row(idx),
+                11 => nav_back(),
+                _ => {}
+            }
+        }
+    }
+}
+
+
+
+static PAGE_INFO: InfoPage = InfoPage;
+static PAGE_DIR: DirPage = DirPage;
+static PAGE_VIEWER: ViewerPage = ViewerPage;
+static PAGE_WF_LIST_8: WatchfaceListPage = WatchfaceListPage { pid: 8 };
+static PAGE_WF_LIST_9: WatchfaceListPage = WatchfaceListPage { pid: 9 };
+static PAGE_WF_MGMT: WfMgmtPage = WfMgmtPage { shake_en: AtomicU32::new(1) };
+static PAGE_BRIGHT: BrightnessPage = BrightnessPage { req: AtomicU32::new(0), req_val: AtomicU32::new(0) };
+static PAGE_CACHEP: CachePage = CachePage;
+static PAGE_BEAUTIFY: BeautifyPage = BeautifyPage;
+static PAGE_FONTLIST: FontListPage = FontListPage;
+static PAGE_ICONSUB: IconSubPage = IconSubPage;
+
+pub(crate) static PAGE_TABLE: [&dyn Page; 14] = [
+    &PAGE_INFO,       
+    &PAGE_DIR,        
+    &PAGE_DIR,        
+    &PAGE_DIR,        
+    &PAGE_DIR,        
+    &PAGE_FONTLIST,   
+    &PAGE_ICONSUB,    
+    &PAGE_VIEWER,     
+    &PAGE_WF_LIST_8,  
+    &PAGE_WF_LIST_9,  
+    &PAGE_WF_MGMT,    
+    &PAGE_BRIGHT,     
+    &PAGE_CACHEP,     
+    &PAGE_BEAUTIFY,     
+];

@@ -1,0 +1,488 @@
+[
+  {
+    "stem": "ctrl_flashlight",
+    "name": "手电筒",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/flashlight_all.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_setting",
+    "name": "设置",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/setting_all.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_battery",
+    "name": "省电",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/battery_all.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_bright",
+    "name": "亮度",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/bright_open.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_alarm",
+    "name": "闹钟",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/alarm_all.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_findphone",
+    "name": "查找手机",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/findphone_all.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_disturb",
+    "name": "勿扰",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/disturb_open.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_raise",
+    "name": "抬腕",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/raise_open.rle",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "ctrl_phone_conn",
+    "name": "手机已连接",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/phone_conn.rle",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "ctrl_phone_disconn",
+    "name": "手机未连接",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/phone_disconn.rle",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "ctrl_add",
+    "name": "添加",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/add.rle",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "ctrl_delete",
+    "name": "移除",
+    "group": "CONTROL",
+    "path": "S:/system/image/control_center/delete.rle",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "set_about",
+    "name": "关于",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/about.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_applayout",
+    "name": "应用布局",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/applayout.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_battery",
+    "name": "电池",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/battery.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_dial",
+    "name": "表盘",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/dial.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_display",
+    "name": "显示",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/display.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_disturb",
+    "name": "勿扰",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/disturb.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_downkey",
+    "name": "按键",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/downkey.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_guesture",
+    "name": "手势",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/guesture.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_hr_boardcast",
+    "name": "心率广播",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/hr_boardcast.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_motion",
+    "name": "运动",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/motion.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_notify",
+    "name": "通知",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/notify.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_sound",
+    "name": "声音",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/sound.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_system",
+    "name": "系统",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/system.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "set_wrist",
+    "name": "佩戴",
+    "group": "SETTINGS",
+    "path": "S:/system/image/settings/icon/wrist.bin",
+    "width": 64,
+    "height": 64,
+    "source_header": "0x801000a"
+  },
+  {
+    "stem": "weather_clear",
+    "name": "晴",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_clear.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_nclear",
+    "name": "夜间晴",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_nclear.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_pcloudy",
+    "name": "多云",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_pcloudy.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_npcloudy",
+    "name": "夜间多云",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_npcloudy.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_fog",
+    "name": "雾",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_fog.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_nfog",
+    "name": "夜间雾",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_nfog.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_haze",
+    "name": "霾",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_haze.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_srain",
+    "name": "小雨",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_srain.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_mrain",
+    "name": "中雨",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_mrain.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_hrain",
+    "name": "大雨",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_hrain.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_storm",
+    "name": "暴雨",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_storm.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_thunder",
+    "name": "雷雨",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_thunder.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_ssnow",
+    "name": "小雪",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_ssnow.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_msnow",
+    "name": "中雪",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_msnow.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_hsnow",
+    "name": "大雪",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_hsnow.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_sleet",
+    "name": "雨夹雪",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_sleet.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_rainsnow",
+    "name": "雨雪",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_rainsnow.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_hail",
+    "name": "冰雹",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_hail.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "weather_native",
+    "name": "未知天气",
+    "group": "SYSTEM",
+    "path": "S:/system/image/weather/i_native.bin",
+    "width": 48,
+    "height": 48,
+    "source_header": "0x600c00a"
+  },
+  {
+    "stem": "hr_abnormal",
+    "name": "心率异常",
+    "group": "SYSTEM",
+    "path": "S:/system/image/heartrate/hr_abnormal.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "hr_explain",
+    "name": "心率说明",
+    "group": "SYSTEM",
+    "path": "S:/system/image/heartrate/hr_explain.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "hr_rest",
+    "name": "静息心率",
+    "group": "SYSTEM",
+    "path": "S:/system/image/heartrate/hr_rest.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "hr_setting",
+    "name": "心率设置",
+    "group": "SYSTEM",
+    "path": "S:/system/image/heartrate/hr_setting.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "hr_zone",
+    "name": "心率区间",
+    "group": "SYSTEM",
+    "path": "S:/system/image/heartrate/hr_zone.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "hr_zone_info",
+    "name": "心率区间说明",
+    "group": "SYSTEM",
+    "path": "S:/system/image/heartrate/hr_zone_info.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "oxygan_ill_btn",
+    "name": "血氧说明",
+    "group": "SYSTEM",
+    "path": "S:/system/image/oxygen/oxygan_ill_btn.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "oxygan_low_ill_btn",
+    "name": "低血氧说明",
+    "group": "SYSTEM",
+    "path": "S:/system/image/oxygen/oxygan_low_ill_btn.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  },
+  {
+    "stem": "oxygen_setting",
+    "name": "血氧设置",
+    "group": "SYSTEM",
+    "path": "S:/system/image/oxygen/oxygen_setting.rle",
+    "width": 64,
+    "height": 56,
+    "source_header": "0x701000a"
+  }
+]

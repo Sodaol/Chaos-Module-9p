@@ -62,17 +62,25 @@ pub(crate) unsafe fn rd32(p: *const u32) -> u32 {
 
 /// 宽松门: flash 代码段 / 0x2C 只读别名域 / 段B(0x1C) / RAM / 堆。
 pub(crate) unsafe fn plausible_ptr(v: u32) -> bool {
+    if cfg!(feature="n67") {
+    (v>=0x0c080000&&v<0x0c7ea290)||(v>=0x2c080000&&v<0x2c7ea290)||(v>=0x1c000020&&v<0x1efffff8)||(v>=0x20000000&&v<0x20100000)||(v>=0x3c000020&&v<0x3efffff8)
+    } else {
     (v >= 0x0C00_0000 && v <= 0x0DFF_FFFF)
         || (v >= 0x2C00_0000 && v <= 0x2DFF_FFFF)
         || (v >= 0x1C00_0000 && v <= 0x1DFF_FFFF)
         || (v >= 0x2000_0000 && v <= 0x2400_FFFF)
         || (v >= 0x3000_0000 && v <= 0x3FFF_FFFF)
+    }
 }
 
 /// 严格门: 4 字节对齐的 RAM 或堆 —— 能当对象指针遍历的只有这一类。
 /// 0x0C/0x1C/0x2C 是代码与只读常量, 拿它们当链表节点会读到垃圾并一路走下去。
 pub(crate) unsafe fn safe_ptr(v: u32) -> bool {
+    if cfg!(feature="n67") {
+    v&3==0&&((v>=0x20000000&&v<0x20100000)||(v>=0x3c000020&&v<0x3efffff8))
+    } else {
     (v & 3) == 0
         && ((v >= 0x2000_0000 && v <= 0x2400_FFFF)
             || (v >= 0x3000_0000 && v <= 0x3FFF_FFFF))
+    }
 }

@@ -1,0 +1,11 @@
+{
+  "reference_filename": "Chaos-9Pro-3.1.190-v2.1.bin",
+  "reference_sha256": "1eb7f4f6fde5edde4864e16f69cb2718c467140160c1b55731d459904a8b2e8d",
+  "original_module_sha256": "d5d17100430debd8a855b139b467965bf3032e1568e8025a6294d692ce3068b3",
+  "files": {
+    "arm_registrar.lua.in": "202b017207a6a9b471cc5cae97248f35752c2a3aa33e2e8355d68bec66b4abd8",
+    "bootstrap.bin": "1cb6995b2a7746b72a83055ef1850dcedaffc4439bec3f87a9a47570a556a75f",
+    "load_module.lua.in": "eaf39f67ee16fbbc01dcc7acbb8c7a69bf4936448c3ad37569b3ef5217ecca2f",
+    "timer-bootstrap.bin": "fe1d1180a004909cc637b1283da81f7140d607069020ab40a4947b2a5c20b56a"
+  }
+}

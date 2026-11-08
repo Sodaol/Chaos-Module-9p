@@ -1,0 +1,32 @@
+-- Installer-owned data only; preserve user fonts, icons, settings and backups.
+local DATA_VERSION='@@DATA_VERSION@@'
+local DATA_MARKER='/data/chaos/version.txt'
+local function data_assets() return {@@DATA_ASSETS@@} end
+local function data_read(path)
+ local f=io.open(path,'rb');if not f then return nil end
+ local b=f:read('*a');local ok=f:close();if not ok then return nil end;return b
+end
+local function data_replace(path,bytes)
+ local temp=path..'.update'
+ local f=assert(io.open(temp,'wb'),'无法写入更新：'..path)
+ local ok,err=pcall(function()
+  assert(f:write(bytes),'更新写入失败：'..path)
+  assert(f:close(),'更新关闭失败：'..path);f=nil
+  assert(data_read(temp)==bytes,'更新校验失败：'..path)
+  assert(os.rename(temp,path),'更新提交失败：'..path)
+ end)
+ if not ok then if f then pcall(function()f:close()end)end;os.remove(temp);error(err,0) end
+end
+local function update_program_data()
+ local current=data_read(DATA_MARKER)
+ if current==DATA_VERSION..'\n' then mark('data version matches '..DATA_VERSION);return end
+ local DATA_ASSETS=data_assets()
+ mark('update program data '..tostring(current or 'legacy')..' -> '..DATA_VERSION)
+ for _,e in ipairs(DATA_ASSETS)do
+  local path='/data/chaos/'..e[1]
+  data_replace(path,e[2])
+ end
+ -- Marker commits last. A failed update retains the previous marker and retries.
+ data_replace(DATA_MARKER,DATA_VERSION..'\n')
+ mark('program data committed '..DATA_VERSION)
+end

@@ -1,0 +1,7 @@
+local function entry_preflight()
+  phase('检查应用 ID 与旧版')
+  local mask=native(fn(OFF_PREFLIGHT))
+  mark(string.format('ID_CHECK mask=%x',mask))
+  if mask&2~=0 then error('检测到旧版 E7C3 仍在运行\n请重启后只运行新版安装器',0) end
+  if mask&1~=0 then error('检测到新版 E7D4 已存在\n更新请先重启',0) end
+end

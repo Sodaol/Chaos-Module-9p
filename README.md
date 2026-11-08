@@ -1,104 +1,40 @@
-<div align="center">
+# Chaos-Module-9p
 
-# Chaos
+小米手环 9 Pro 原生应用扩展平台。基于 [WenHuaYiYang/Chaos-Module](https://github.com/WenHuaYiYang/Chaos-Module) 移植，由 meowl 进行 9 Pro 适配。
 
-**小米手环 10 Pro 的原生应用平台**
-
-一个内核模块加一个 Lua 安装器，借固件自己的注册链把原生页面装进手环桌面。
-
-[简体中文](README.md) | [English](README.en.md)
-
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Firmware](https://img.shields.io/badge/firmware-3.101.043-green.svg)](#兼容性)
-[![Device](https://img.shields.io/badge/device-p67-orange.svg)](#兼容性)
-[![Release](https://img.shields.io/badge/release-v1.0.7-blue.svg)](docs/CHANGELOG.md)
-
-</div>
-
----
-
-## 简介
-
-Chaos 把一组 Rust 编写的原生页面注册进小米手环 10 Pro 的固件，让它们在桌面以普通应用的形式出现：
-图标、点击、转场都由固件自己的 launcher 完成。模块不联网、不依赖手机，也不改动固件分区。
-
-它最初是为了在 10 Pro 上补研究工具链而写的，后来逐渐长成一套完整的设备管理界面：
-应用管理、表盘、字体、图标、亮度、缓存、模糊与震动设置。
-
-> **规模**：约 1.4 万行 Rust，19 个页面 id，`chaos_sup.ko` 约 190 KB。
-
-## 特性
-
-- **应用管理**：隐藏/显示、一键批量、排除项；普通/深度隐藏两种模式（[说明](docs/APP-MANAGER.md)）。
-- **系统美化**：字体切换、桌面图标包、系统模糊、表盘通透背景。
-- **表盘**：内置/市场表盘切换、摇一摇轮换、表盘管理。
-- **设备工具**：亮度、缓存清理、时间/日期设置、震动测试。
-- **运行日志**：关键操作写入 `/data/chaos/chaos.log`，设置 → 运行日志可查看与清空。
-- **无外部依赖**：只调固件已验证的 API，不注入 JS、不依赖网络。
+当前移植基线为上游 v1.1.0（`cb5e1667e4124b3dd69a5e85794834e589c9bb28`），不是上游最新 master 的全部功能。当前版本：**2.2-alpha.51-language1，测试版**。
 
 ## 兼容性
 
-| 项目 | 要求 |
-|---|---|
-| 设备 | 小米手环 10 Pro（`p67` / `M2551B1`） |
-| 固件 | **3.101.043** |
-| 模块格式 | ARM ELF32 `ET_REL`，`thumbv8m.main-none-eabi`，软浮点 |
-| 安装器 | Lua 容器（magic `0x1234A55A`） |
+仅适用于小米手环 9 Pro 国行 N67、固件 **3.1.190**。固件入口地址固定，其他版本需要重新适配。采用 no_std Rust 原生模块、C 桥接与 Lua 安装器，在 RAM 中加载；不使用 insmod，不修改系统分区，不提供开机自启动。
 
-> 固件地址是硬编码的。**3.101.036 及其它版本不要使用本项目的模块**；升级固件后需要重新适配地址。
+## 功能
 
-## 快速开始
+- 应用管理：显示、隐藏、排序、批量操作与应用详情；保护系统应用，不改写个人 apps.json。
+- 字体、图标选择，静态表盘模糊／通透背景与背景生成。
+- 表盘切换与多轴摇一摇检测。
+- 日期、时间、系统关于字段与系统语言设置。
+- GH225／AW86225 震动适配、文件管理与系统原生消息通知。
 
-1. 从 [Releases](https://github.com/WenHuaYiYang/Chaos-Module/releases) 下载 `chaos-installer-p67.bin`。
-2. 用 AstroBox 等工具的自定义表盘 / 第三方应用入口安装。
-3. **重启手环**，模块在开机时加载。
-4. 打开 Chaos 应用，按需启用自动注入与后台恢复。
+功能存在不代表所有机型组合均已实机验证。限制见 [验证状态](docs/VALIDATION.md)。
 
-完整步骤与故障排查见 **[docs/INSTALL.md](docs/INSTALL.md)**。
+## 安装
 
-## 构建
+1. 使用 AstroBox 的自定义表盘入口传送本项目安装器 `.bin`，不要使用固件 OTA 入口。
+2. 更新时先重启手环，清除 RAM 中的旧版模块。
+3. 切换到 Chaos 安装器表盘，点「运行」，等待安装完成。
+4. 从应用列表或系统设置打开 Chaos。重启后需重新运行安装器。
 
-```bash
-python3 tools/build.py            # ko + 图标 + p67 容器
-python3 tools/build.py --skip-ko  # 只重打容器
-```
+应用 ID：`E7D4`；安装器表盘 ID：`990000000029`。不要同时注入多个版本。
 
-依赖、流程、版本号规则与发版检查单见 **[docs/BUILD.md](docs/BUILD.md)**。
+系统模糊：选择背景模式 → 点「从表盘生成背景」→ 返回一般时间表盘并保持亮屏 → 等待生成完成。自动跟随需另行开启。
 
-## 文档
+## 构建与验证
 
-| 文档 | 内容 |
-|---|---|
-| [安装与升级](docs/INSTALL.md) | 安装、回退、常见故障 |
-| [使用说明](docs/USAGE.md) | 页面地图与每个功能 |
-| [应用管理](docs/APP-MANAGER.md) | 两种隐藏模式的固件依据与代价 |
-| [构建与发版](docs/BUILD.md) | 工具链、流程、版本号、CI |
-| [架构](docs/ARCHITECTURE.md) | 启动链、页面模型、IPC、固件耦合 |
-| [LVGL 地址](docs/LVGL-MAP.md) | p67 固件的 LVGL 类描述与入口 |
-| [更新日志](docs/CHANGELOG.md) | 版本历史 |
+参见 [构建说明](docs/BUILD-N67.md) 和 [验证状态](docs/VALIDATION.md)。仓库不附带原厂固件、系统字体或用户投递包。
 
-文档索引：[docs/README.md](docs/README.md)。
+## 许可与致谢
 
-## 贡献
+保留上游 **AGPL-3.0** 及各文件已有版权声明，详见 [LICENSE](LICENSE) 和 `licenses/`。9 Pro 模糊像素核心重新实现，既有 Chaos 平台接入与其他继承代码继续遵循原许可证。应用图标沿用上游 Chaos artwork。v2.1 注入兼容例程的来源与摘要见 `n67/injection-v21/`。
 
-1. Fork 本仓库并从 `master` 开分支。
-2. 改动模块后至少跑一次 `sh tools/build_ko.sh`（或等 CI）。
-3. 涉及固件地址、页面数量、注册链的改动，请在 PR 里附上验证方式（真机日志 / 反汇编证据）。
-4. 提交前确认没有把 `.ko`、字体、商业素材或密钥带进仓库。
-
-## 许可证
-
-[AGPL-3.0](LICENSE)。分发修改版时请保留相同许可证与源码获取方式。
-
-字体与第三方素材遵循各自许可证；仓库不包含商业字体、系统图标或固件本体。
-
-## 致谢
-
-- 小米 Vela / NuttX 社区与 openvela 文档
-- 所有在真机上验证、提交日志与反汇编证据的贡献者
-
-<div align="center">
-
-**如果这个项目帮到了你，欢迎 Star ⭐**
-
-</div>
+分发修改版二进制时，请同时提供对应的完整源码、构建脚本与许可。感谢上游作者和参与测试、提供固件分析资料的贡献者。
