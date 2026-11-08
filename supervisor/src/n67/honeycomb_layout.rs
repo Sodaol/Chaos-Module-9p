@@ -8,7 +8,6 @@ const DRAG_THRESHOLD: i32 = 10;
 pub(crate) const ZOOM_MIN: i32 = 128;
 pub(crate) const ZOOM_MAX: i32 = 384;
 pub(crate) const ZOOM_EDGE: i32 = 28;
-const EXIT_THRESHOLD: i32 = 24;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -63,23 +62,19 @@ pub(crate) fn frame_zoom(index: usize, pan: Point, zoom: i32) -> Frame {
     let zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
     let dx = p.x * zoom / ONE + pan.x;
     let dy = p.y * zoom / ONE + pan.y;
-    let nx = dx as i64 * 256 / (WIDTH / 2) as i64;
-    let ny = dy as i64 * 256 / (HEIGHT / 2) as i64;
+    let visible = dx.abs() < WIDTH / 2 + 56 && dy.abs() < HEIGHT / 2 + 56;
+    if !visible {
+        return Frame { x: 0, y: 0, diameter: 1, visible: false };
+    }
+    let nx = dx * 256 / (WIDTH / 2);
+    let ny = dy * 256 / (HEIGHT / 2);
     let radial = (nx * nx + ny * ny).min(65536);
     Frame {
         x: WIDTH / 2 + dx,
         y: HEIGHT / 2 + dy,
         diameter: ((84 - (56 * radial / 65536) as i32) * zoom / ONE).max(1),
-        visible: dx.abs() < WIDTH / 2 + 56 && dy.abs() < HEIGHT / 2 + 56,
+        visible,
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Route {
-    #[default]
-    Cloud,
-    Horizontal,
-    Vertical,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,8 +88,6 @@ pub(crate) struct Camera {
     travel: i32,
     zoom: i32,
     zooming: bool,
-    overflow: Point,
-    route: Route,
     bounds_count: usize,
     min: Point,
     max: Point,
@@ -118,8 +111,6 @@ impl Camera {
             travel: 0,
             zoom: ONE,
             zooming: false,
-            overflow: Point { x: 0, y: 0 },
-            route: Route::Cloud,
             bounds_count: usize::MAX,
             min: Point { x: 0, y: 0 },
             max: Point { x: 0, y: 0 },
@@ -136,9 +127,6 @@ impl Camera {
     }
     pub(crate) fn frame(&self, index: usize) -> Frame {
         frame_zoom(index, self.pan(), self.zoom)
-    }
-    pub(crate) fn route(&self) -> Route {
-        self.route
     }
     pub(crate) fn moving(&self) -> bool {
         self.pressed || self.velocity.x != 0 || self.velocity.y != 0
@@ -160,11 +148,9 @@ impl Camera {
         self.zooming =
             point.x >= WIDTH - ZOOM_EDGE && point.x < WIDTH && point.y >= 0 && point.y < HEIGHT;
         self.stop_tap |= self.zooming;
-        self.overflow = Point::default();
-        self.route = Route::Cloud;
     }
     pub(crate) fn drag(&mut self, delta: Point, count: usize) -> bool {
-        if !self.pressed || self.route != Route::Cloud {
+        if !self.pressed {
             return false;
         }
         let d = Point {
@@ -203,39 +189,16 @@ impl Camera {
         self.pan.y += self.pending.y * ONE;
         self.pending = Point::default();
         self.velocity = Point {
-            x: d.x * ONE,
-            y: d.y * ONE,
+            x: d.x.clamp(-24, 24) * ONE,
+            y: d.y.clamp(-24, 24) * ONE,
         };
-        let requested = self.pan;
         self.clamp(count);
-        // At the left/top content boundary, outward motion belongs to the
-        // firmware's page navigation. Never hand off inertia or a zoom drag.
-        let dx = (requested.x - self.pan.x) / ONE;
-        let dy = (requested.y - self.pan.y) / ONE;
-        self.overflow.x = if dx > 0 && d.x > d.y.abs() {
-            self.overflow.x + dx
-        } else {
-            0
-        };
-        self.overflow.y = if dy > 0 && d.y > d.x.abs() {
-            self.overflow.y + dy
-        } else {
-            0
-        };
-        if self.overflow.x >= EXIT_THRESHOLD {
-            self.route = Route::Horizontal;
-        } else if self.overflow.y >= EXIT_THRESHOLD {
-            self.route = Route::Vertical;
-        }
-        if self.route != Route::Cloud {
-            self.velocity = Point::default();
-        }
         self.pan != old
     }
     pub(crate) fn release(&mut self) {
         self.pressed = false;
         // Keep the drag latch until the NEXT press, including SHORT_CLICKED.
-        if !self.dragged || self.zooming || self.route != Route::Cloud {
+        if !self.dragged || self.zooming {
             self.velocity = Point::default();
         }
     }
@@ -254,8 +217,8 @@ impl Camera {
         self.pan.x += self.velocity.x;
         self.pan.y += self.velocity.y;
         self.clamp(count);
-        self.velocity.x = self.velocity.x * 3 / 4;
-        self.velocity.y = self.velocity.y * 3 / 4;
+        self.velocity.x = self.velocity.x * 7 / 8;
+        self.velocity.y = self.velocity.y * 7 / 8;
         if self.velocity.x.abs() < 64 {
             self.velocity.x = 0;
         }
@@ -281,11 +244,11 @@ impl Camera {
         let x = self
             .pan
             .x
-            .clamp(-self.max.x * self.zoom, -self.min.x * self.zoom);
+            .clamp(-self.max.x * self.zoom - 96 * ONE, -self.min.x * self.zoom + 96 * ONE);
         let y = self
             .pan
             .y
-            .clamp(-self.max.y * self.zoom, -self.min.y * self.zoom);
+            .clamp(-self.max.y * self.zoom - 96 * ONE, -self.min.y * self.zoom + 96 * ONE);
         if x != self.pan.x {
             self.velocity.x = 0;
         }

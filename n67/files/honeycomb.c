@@ -29,8 +29,9 @@ typedef struct {
  u32 visible;
 } hc_Item;
 typedef struct {
- u32 overlay, grid, hidden, hash, count, built, ticks;
+ u32 overlay, grid, hidden, hash, count, built;
  u32 dirty, edit_requested, suspended_grid;
+ u32 refresh_timer, motion_timer, last_scan, active_page, enabled;
  i32 width, height, origin_x, origin_y;
  hc_Item items[MAX_APPS];
 } hc_State;
@@ -54,6 +55,31 @@ static void hc_retire(hc_State *s) {
 }
 
 static int hc_scan(hc_State *s, u32 *signature, u32 store);
+static void hc_update_frames(hc_State *s);
+
+static u32 hc_now(void) { return FN(0xc1610b9u, u32(*)(void))(); }
+
+static void hc_motion(u32 timer) {
+ hc_State *s = hc_state();
+ if (s->hidden && s->overlay && *(volatile u8 *)0x200ca379u == 2 &&
+     FN(0xc44a5adu, u32(*)(u32))(0xffffffffu) == s->active_page) {
+  s->dirty |= chaos_honeycomb_input(11, 0, 0, s->count);
+  if (s->dirty) {
+   s->dirty = 0;
+   hc_update_frames(s);
+   return;
+  }
+ }
+ *(volatile u8 *)(timer + 0x14u) |= 1u;
+}
+
+static void hc_wake_motion(hc_State *s) {
+ if (!s->motion_timer)
+  s->motion_timer = FN(0xc25a289u, u32(*)(u32,u32,u32))((u32)hc_motion, 16, 0);
+ if (hc_ptr(s->motion_timer))
+  *(volatile u8 *)(s->motion_timer + 0x14u) &= (u8)~1u;
+}
+
 
 static void hc_ui_event(u32 e) {
  if (!hc_ptr(e)) return;
@@ -89,6 +115,7 @@ static void hc_ui_event(u32 e) {
  }
  if (code == 3u || code == 8u) {
   chaos_honeycomb_input(code, 0, 0, s->count);
+  hc_wake_motion(s);
   return;
  }
  if (code != 1u && code != 2u) return;
@@ -98,6 +125,7 @@ static void hc_ui_event(u32 e) {
  FN(0xc239f93u, void(*)(u32, i16 *))(indev, point);
  s->dirty |= chaos_honeycomb_input(code, (point[0] - s->origin_x) * 336 / s->width,
                                  (point[1] - s->origin_y) * 480 / s->height, s->count);
+ if (s->dirty) hc_wake_motion(s);
  u32 bubble = chaos_honeycomb_input(12, 0, 0, s->count);
  if (!!(RD(object_id + 0x1cu) & 65536u) != bubble)
   hc_flag(object_id, 65536, bubble);
@@ -144,7 +172,8 @@ static void hc_update_frames(hc_State *s) {
   }
   if (!f[3]) continue;
   u32 diameter = (u32)f[2] * (u32)s->width / 336u;
-  if (!diameter) diameter = 1;
+  diameter = (diameter + 2u) & ~3u;
+  if (!diameter) diameter = 4;
   i32 x = f[0] * s->width / 336 - (i32)diameter / 2;
   i32 y = f[1] * s->height / 480 - (i32)diameter / 2;
   if (item->diameter != diameter) hc_size(item->cell, diameter, diameter);
@@ -188,14 +217,45 @@ static int hc_add_icon(hc_State *s,u32 index){
  return 1;
 }
 
+void chaos_honeycomb_update(u32 enabled);
+
+/* N67 lv_disp_drv_register stores the native refresh timer at disp+4.
+ * Replace its callback only while the timer and its display are a verified pair.
+ */
+static void hc_before_refresh(u32 timer) {
+ if (hc_state()->enabled) {
+  chaos_honeycomb_update(1);
+ } else if (hc_ptr(timer) && RD(timer + 8u) == ((u32)hc_before_refresh | 1u)) {
+  RD(timer + 8u) = 0xc2467a1u;
+ }
+ FN(0xc2467a1u, void(*)(u32))(timer);
+}
+
+static void hc_bind_refresh(hc_State *s, u32 enabled) {
+ u32 display = RD(0x200b3750u);
+ u32 timer = hc_ptr(display) ? RD(display + 4u) : 0;
+ if (!hc_ptr(timer) || RD(timer + 12u) != display) return;
+ u32 callback = (u32)hc_before_refresh | 1u;
+ if (enabled && RD(timer + 8u) == 0xc2467a1u) {
+  RD(timer + 8u) = callback;
+  s->refresh_timer = timer;
+ } else if (!enabled && timer == s->refresh_timer && RD(timer + 8u) == callback) {
+  RD(timer + 8u) = 0xc2467a1u;
+  s->refresh_timer = 0;
+ }
+}
+
 void chaos_honeycomb_update(u32 enabled) {
  hc_State *s = hc_state();
+ s->enabled = enabled;
  if (!enabled) {
+  if (s->refresh_timer) hc_bind_refresh(s, 0);
   if (s->overlay || s->grid) hc_retire(s);
   s->suspended_grid = 0;
   return;
  }
  if (*(volatile u8 *)0x200ca379u != 2) return;
+ hc_bind_refresh(s, 1);
  u32 top = FN(0xc44a5adu, u32(*)(u32))(0xffffffffu);
  if (!hc_ptr(top) || RD(top + 0x14u) != 0x100000u) {
   s->suspended_grid = 0;
@@ -209,6 +269,20 @@ void chaos_honeycomb_update(u32 enabled) {
   s->suspended_grid = 0;
   return;
  }
+ u32 manager = RD(0x200cacd0u);
+ u32 face_visible = hc_ptr(manager) && hc_ptr(manager + 0x6cu) &&
+                    !*(volatile u8 *)(manager + 0x6cu) &&
+                    *(volatile u8 *)(manager + 0x6du);
+ if (face_visible) {
+  if (s->hidden) {
+   if (hc_ptr(s->overlay)) hc_flag(s->overlay, 1, 1);
+   if (hc_ptr(s->grid) && RD(s->grid) == GRID_CLASS) hc_flag(s->grid, 1, 0);
+   s->hidden = 0;
+   chaos_honeycomb_input(3, 0, 0, s->count);
+  }
+  s->suspended_grid = 0;
+ }
+ s->active_page = face_visible ? 0 : top;
  if (s->edit_requested) {
   s->suspended_grid = grid;
   hc_retire(s);
@@ -219,19 +293,16 @@ void chaos_honeycomb_update(u32 enabled) {
   return;
  }
  if ((s->grid && s->grid != grid) || (!s->overlay && s->hidden)) hc_retire(s);
- if (s->overlay && s->built == s->count) {
-  if (!(RD(grid + 0x1cu) & 1u)) hc_flag(grid, 1, 1);
-  s->dirty |= chaos_honeycomb_input(11, 0, 0, s->count);
-  if (s->dirty) { s->dirty = 0; hc_update_frames(s); }
-  if (++s->ticks % 10u) return;
+ if (s->overlay && s->hidden && !(RD(grid + 0x1cu) & 1u)) hc_flag(grid, 1, 1);
+ if (s->overlay && s->built == s->count && hc_now() - s->last_scan >= 500u &&
+     !chaos_honeycomb_input(13, 0, 0, s->count)) {
   u32 hash;
-  if (!hc_scan(s, &hash, 0)) { hc_retire(s); return; }
-  if (hash == s->hash) return;
-  hc_retire(s);
+  s->last_scan = hc_now();
+  if (!hc_scan(s, &hash, 0) || hash != s->hash) hc_retire(s);
  }
  if (!s->overlay) {
   u32 hash;
-  if ((RD(grid + 0x1cu) & 1u) || !hc_scan(s, &hash, 1)) return;
+  if ((!face_visible && (RD(grid + 0x1cu) & 1u)) || !hc_scan(s, &hash, 1)) return;
   i32 x = *(volatile i16 *)(grid + 0x14u);
   i32 y = *(volatile i16 *)(grid + 0x16u);
   i32 w = (i32)*(volatile i16 *)(grid + 0x18u) - x + 1;
@@ -248,7 +319,7 @@ void chaos_honeycomb_update(u32 enabled) {
   s->origin_y = y;
   s->hash = hash;
   s->built = 0;
-  s->ticks = 0;
+  s->last_scan = hc_now();
   chaos_honeycomb_input(0, 0, 0, s->count);
   hc_plain(overlay);
   hc_size(overlay, w, h);
@@ -262,19 +333,34 @@ void chaos_honeycomb_update(u32 enabled) {
    return;
   }
  }
- for (u32 work = 0; work < 8u && s->built < s->count; ++work) {
-  if (!hc_add_icon(s, s->built)) { hc_retire(s); return; }
-  ++s->built;
- }
- if (s->built == s->count) {
+ u32 first = s->built;
+ u32 batch = first == 0 && !face_visible ? 19u : 6u;
+ if (first < s->count && (!s->hidden || !chaos_honeycomb_input(13, 0, 0, s->count))) {
   u32 hash;
-  if (!hc_scan(s, &hash, 0) || hash != s->hash || (RD(grid + 0x1cu) & 1u)) {
+  if (first && (!hc_scan(s, &hash, 0) || hash != s->hash)) {
    hc_retire(s);
    return;
   }
-  hc_update_frames(s);
+  for (u32 work = 0; work < batch && s->built < s->count; ++work) {
+   if (!hc_add_icon(s, s->built)) {
+    hc_retire(s);
+    s->suspended_grid = grid;
+    return;
+   }
+   ++s->built;
+  }
+ }
+ if (first != s->built) hc_update_frames(s);
+ if (!face_visible && !s->hidden && s->built) {
   hc_flag(s->grid, 1, 1);
   s->hidden = 1;
   hc_flag(s->overlay, 1, 0);
+ }
+ if (s->hidden && !s->motion_timer) {
+  s->dirty |= chaos_honeycomb_input(11, 0, 0, s->count);
+  if (s->dirty) {
+   s->dirty = 0;
+   hc_update_frames(s);
+  }
  }
 }

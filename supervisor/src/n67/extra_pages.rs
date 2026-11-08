@@ -154,7 +154,7 @@ impl Page for AboutPage {
         if crate::diagnostics::DEBUG {return crate::diagnostics::render(c);}
         // Same information hierarchy and native rows as the 10 Pro 1.0.8.
         build_rows(c,c.title,&[
-            (0,RowSpec::tap("Chaos\0".as_bytes(),b"2.2-alpha.54-honeycomb1\0".as_ptr())),
+            (0,RowSpec::tap("Chaos\0".as_bytes(),b"2.2-alpha.55-honeycomb2\0".as_ptr())),
             (9,RowSpec::display("编译时间\0".as_bytes(),include_bytes!("../../../n67/build-time.txt").as_ptr())),
             (1,RowSpec::display("运行固件\0".as_bytes(),b"9 Pro / N67 CN / 3.1.190\0".as_ptr())),
             (2,RowSpec::display("文华逸洋\0".as_bytes(),"开发者\0".as_ptr())),
