@@ -61,7 +61,7 @@ def main():
  ui_end=src.index('local function system_version()',ui_start)
  src=src[:ui_start]+(B/'installer-ui.lua.in').read_text('utf-8')+'\n'+src[ui_end:]
  for k,v in {'SIZE':str(j['size']),'OFFSETS':offsets,'RES_LAYOUT':'{size=0x2000,status=0x200,ident=0x280,icon=0x2a0,title=0x2e0,cfg=0x300}',
-  'APP_ID':'0xE7D4','PAGE_ID':'0xE7D40000','TITLE':lua('Chaos'),'RELEASE':lua('2.2-alpha.56-honeycomb3'),'LOG':lua('/data/chaos-n67.log'),
+  'APP_ID':'0xE7D4','PAGE_ID':'0xE7D40000','TITLE':lua('Chaos'),'RELEASE':lua('2.2-alpha.57-honeycomb4'),'LOG':lua('/data/chaos-n67.log'),
   'MARK':lua('/data/chaos-n67.mark'),'DUMP':lua('/data/chaos-n67-read.txt'),'RESIDENT':resident,'ICON':'@@CHAOS_ICON@@','PET':'@@PET_ASSET@@'}.items():src=src.replace('@@'+k+'@@',v)
  src=src.replace("    if stage==3 and runtime_ptr(word(bytes,0x40),32) then", """    local ids=native(fn(OFF_PREFLIGHT))
     mark(string.format('registered IDs=%x stage=%d',ids,stage))
@@ -225,7 +225,7 @@ end
 '''
   data=data.replace(b'local function system_version()',overlay.encode('utf8')+b'local function system_version()',1)
   data=data.replace(b"compatibility:set{text=message,text_color=0xFF909C}",b"compatibility:set{text=message,text_color=0xFF909C};show_entry_error(message)")
-  data=data.replace(b"local RELEASE = '2.2-alpha.56-honeycomb3'",b"local RELEASE = '2.2-alpha.56-honeycomb3-entry-diag1'")
+  data=data.replace(b"local RELEASE = '2.2-alpha.57-honeycomb4'",b"local RELEASE = '2.2-alpha.57-honeycomb4-entry-diag1'")
  for key,value in [(b'@@BRIDGE_PAYLOAD@@',(G/'bridge.bin').read_bytes()),
   (b'@@CHAOS_RELOCS@@',b''.join(struct.pack('<I',x) for x in c['relocations']))]:data=data.replace(key,binary_expression(value))
  image=(G/'chaos.bin').read_bytes();chunk_size=8192;spec=[]
@@ -280,7 +280,7 @@ end
  data=data.replace(b'@@CHAOS_PAYLOAD@@',b'read_payload()')
  data=data.replace(b'@@CHAOS_ICON@@',icon+b'\n'+settings_write)
  data=data.replace(b'@@PET_ASSET@@',pet_code)
- version_code=(B/'data-version.lua.in').read_text('utf-8-sig').replace('@@DATA_VERSION@@','2.2-alpha.56-honeycomb3').encode('utf8')
+ version_code=(B/'data-version.lua.in').read_text('utf-8-sig').replace('@@DATA_VERSION@@','2.2-alpha.57-honeycomb4').encode('utf8')
  asset_specs=[]
  for name,blob in [('chaos_icon.bin',raw),('chaos_settings_icon.bin',settings_raw),('spotify_cover.bin',cover_raw)]:
   asset_specs.append(b'{'+lua(name).encode()+b','+binary_expression(blob)+b'}')
@@ -290,7 +290,7 @@ end
  import re
  assert not re.findall(rb'@@[A-Z_]+@@',data),'unexpanded template marker'
  (G/'main.lua').write_bytes(data)
- m={'app_id':0xe7d4,'page_id':0xe7d40000,'face_id':'990000000029','name':'N67 Chaos Installer','version':'2.2-alpha.56-honeycomb3','title':'Chaos',
+ m={'app_id':0xe7d4,'page_id':0xe7d40000,'face_id':'990000000029','name':'N67 Chaos Installer','version':'2.2-alpha.57-honeycomb4','title':'Chaos',
   'identity':'com.chaos.manager','pages':PAGE_COUNT,'firmware':'3.1.190','icon_path':'/data/chaos/chaos_icon.bin','profile':'settings-egg' if os.environ.get('CHAOS_SETTINGS_EGG')=='1' else 'standard','hardware_tested':False,'relocations':len(c['relocations'])}
  (B/'manifest.json').write_text(json.dumps(m,ensure_ascii=False,indent=2),'utf-8')
  print('Installer embedded: bridge/Rust/relocations/icon verified by encoder')

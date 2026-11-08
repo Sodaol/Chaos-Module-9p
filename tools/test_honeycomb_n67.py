@@ -11,10 +11,16 @@ class HoneycombBand(NativeBand):
         self.launches = []
         self.refreshes = []
         self.launcher_page = 0
+        self.check_back_dispatch = False
         super().__init__(base)
 
     def hook(self, u, a, n, ud):
-        if 0xc2a1dd4 <= a < 0xc2a1eb8:
+        if self.check_back_dispatch and 0xc44d730 <= a <= 0xc44d738:
+            return
+        if self.check_back_dispatch and a in (0xc44d73a, 0xc44d74e):
+            u.emu_stop()
+            return
+        if 0xc2a1dd4 <= a < 0xc2a1eb8 or 0xc2a4f54 <= a < 0xc2a4f78:
             return
         x, y, z = [u.reg_read(r) for r in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2)]
         result = 0
@@ -68,6 +74,7 @@ class HoneycombBand(NativeBand):
         self.launcher_page = page
         self.w32(page+0x48, 0xc2a31d5)
         self.w32(page+0x4c, 0xc29eff9)
+        self.w32(page+0x64, 0xc2a4f55)
         self.records = []
         self.w32(0x200a3938, 24)
         for i in range(count):
@@ -101,6 +108,17 @@ class HoneycombBand(NativeBand):
     def native_timer(self, timer):
         self.sym['honeycomb_timer_fixture'] = self.r32(timer+8)
         self.call('honeycomb_timer_fixture', timer)
+
+    def stock_back_dispatch(self, page, request):
+        self.check_back_dispatch = True
+        try:
+            self.u.reg_write(UC_ARM_REG_SP, 0x200ff000)
+            self.u.reg_write(UC_ARM_REG_R0, page)
+            self.u.reg_write(UC_ARM_REG_R4, request-4)
+            self.u.emu_start(0xc44d731, 0, count=300000)
+            return self.u.reg_read(UC_ARM_REG_PC)
+        finally:
+            self.check_back_dispatch = False
 
     def overlay(self):
         return self.call('chaos_honeycomb_overlay')
@@ -166,9 +184,23 @@ for base in (0x1d100000, 0x1d340000, 0x1c900000):
     assert b.objects[first]['x'] < after[0][0] and b.objects[first]['y'] > after[0][1]
     assert b.objects[first]['w'] == width_during_drag
     assert not b.r32(overlay+0x1c) & input_chain
+    request = b.alloc(48)
+    b.w8(request+8, 0x36)
+    back = b.r32(page+0x64)
+    assert back != 0xc2a4f55
+    b.sym['launcher_back_fixture'] = back
+    assert b.stock_back_dispatch(page, request) == 0xc44d73a
     b.send(overlay, 7)
     b.send(overlay, 8)
     assert b.launches == [20], 'a drag launched an application'
+    assert b.call('launcher_back_fixture', page, request) == 1
+    b.w8(request+8, 0x33)
+    assert b.call('launcher_back_fixture', page, request) == 0
+    b.w8(request+8, 0x36)
+    b.send(overlay, 1, (5, 240))
+    b.send(overlay, 2, (45, 240))
+    assert b.stock_back_dispatch(page, request) == 0xc44d74e
+    b.send(overlay, 8)
     b.send(overlay, 1, (168, 240))
     b.send(overlay, 8)
     b.native_timer(b.timers[-1])
@@ -196,6 +228,7 @@ for base in (0x1d100000, 0x1d340000, 0x1c900000):
     assert not b.overlay() and not b.r32(b.grid+0x1c) & 1
     assert overlay in b.deleted and b.r32(refresh+8) == 0xc2467a1
     assert b.r32(page+0x48) == 0xc2a31d5 and b.r32(page+0x4c) == 0xc29eff9
+    assert b.r32(page+0x64) == 0xc2a4f55
     # With one icon, dragging from the centre still moves in both directions.
     # The former zero-width bounds swallowed the drag and passed it to stock.
     frame = b.alloc(16)
@@ -205,4 +238,4 @@ for base in (0x1d100000, 0x1d340000, 0x1c900000):
     b.call('chaos_honeycomb_frame', 0, frame)
     assert struct.unpack('<ii', b.u.mem_read(frame, 8)) == (220, 280)
     assert b.call('chaos_honeycomb_input', 12, 0, 0, 1) == 0
-    print(f'PASS honeycomb {base:x}: default off, settings switch, staged layout, two-axis drag, native launch, click suppression, zoom, first refresh, cache reuse and stock editing fallback')
+    print(f'PASS honeycomb {base:x}: default off, settings switch, staged layout, two-axis drag, native launch, click suppression, zoom, first refresh, cache reuse, native swipe-back dispatch and stock editing fallback')

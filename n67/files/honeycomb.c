@@ -427,20 +427,37 @@ static u32 hc_launcher_resume(u32 page) {
  return result;
 }
 
+/* N67 page-manager swipe dispatch passes msg+4 to descriptor+0x64.
+ * A nonzero result at 0xc44d738 consumes the request before it pops a page.
+ * msg+0xc (request+8) == 0x36 is the stock animated swipe-back request.
+ */
+static u32 hc_launcher_back(u32 page, u32 request) {
+ hc_State *s = hc_state();
+ if (s->enabled && s->hidden && hc_ptr(s->overlay) &&
+     page == s->entry_page && page == s->active_page &&
+     hc_ptr(request) && hc_ptr(request + 8u) &&
+     *(volatile u8 *)(request + 8u) == 0x36u &&
+     !chaos_honeycomb_input(12, 0, 0, s->count)) return 1;
+ return FN(0xc2a4f55u, u32(*)(u32,u32))(page, request);
+}
+
 static void hc_bind_entry(hc_State *s, u32 enabled) {
  if (enabled && s->entry_page) return;
  if (!enabled && !s->entry_page) return;
  u32 page = FN(0xc448749u, u32(*)(u32))(0x100000u);
- if (!hc_ptr(page) || !hc_ptr(page + 0x4cu) || RD(page + 0x14u) != 0x100000u) return;
+ if (!hc_ptr(page) || !hc_ptr(page + 0x64u) || RD(page + 0x14u) != 0x100000u) return;
  u32 callback = (u32)hc_launcher_create | 1u;
  u32 resume = (u32)hc_launcher_resume | 1u;
+ u32 back = (u32)hc_launcher_back | 1u;
  if (enabled && RD(page + 0x48u) == 0xc2a31d5u) {
   s->entry_page = page;
   RD(page + 0x48u) = callback;
   if (RD(page + 0x4cu) == 0xc29eff9u) RD(page + 0x4cu) = resume;
+  if (RD(page + 0x64u) == 0xc2a4f55u) RD(page + 0x64u) = back;
  } else if (!enabled && page == s->entry_page) {
   if (RD(page + 0x48u) == callback) RD(page + 0x48u) = 0xc2a31d5u;
   if (RD(page + 0x4cu) == resume) RD(page + 0x4cu) = 0xc29eff9u;
+  if (RD(page + 0x64u) == back) RD(page + 0x64u) = 0xc2a4f55u;
   s->entry_page = 0;
  }
 }
