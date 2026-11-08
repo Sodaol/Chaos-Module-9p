@@ -128,6 +128,8 @@ impl Camera {
     pub(crate) fn frame(&self, index: usize) -> Frame {
         frame_zoom(index, self.pan(), self.zoom)
     }
+    pub(crate) fn zooming(&self) -> bool { self.pressed && self.zooming }
+
     pub(crate) fn moving(&self) -> bool {
         self.pressed || self.velocity.x != 0 || self.velocity.y != 0
     }
@@ -244,11 +246,11 @@ impl Camera {
         let x = self
             .pan
             .x
-            .clamp(-self.max.x * self.zoom - 96 * ONE, -self.min.x * self.zoom + 96 * ONE);
+            .clamp(-self.max.x * self.zoom - (WIDTH / 2 - 48) * ONE, -self.min.x * self.zoom + (WIDTH / 2 - 48) * ONE);
         let y = self
             .pan
             .y
-            .clamp(-self.max.y * self.zoom - 96 * ONE, -self.min.y * self.zoom + 96 * ONE);
+            .clamp(-self.max.y * self.zoom - (HEIGHT / 2 - 48) * ONE, -self.min.y * self.zoom + (HEIGHT / 2 - 48) * ONE);
         if x != self.pan.x {
             self.velocity.x = 0;
         }

@@ -3,7 +3,7 @@
   "page_id": 3889430528,
   "face_id": "990000000029",
   "name": "N67 Chaos Installer",
-  "version": "2.2-alpha.55-honeycomb2",
+  "version": "2.2-alpha.56-honeycomb3",
   "title": "Chaos",
   "identity": "com.chaos.manager",
   "pages": 33,
@@ -11,5 +11,5 @@
   "icon_path": "/data/chaos/chaos_icon.bin",
   "profile": "standard",
   "hardware_tested": false,
-  "relocations": 2347
+  "relocations": 2352
 }

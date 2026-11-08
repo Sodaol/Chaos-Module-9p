@@ -2,7 +2,7 @@
 
 小米手环 9 Pro 原生应用扩展平台。基于 [WenHuaYiYang/Chaos-Module](https://github.com/WenHuaYiYang/Chaos-Module) 移植，由 meowl 进行 9 Pro 适配。
 
-当前移植基线为上游 v1.1.0（`cb5e1667e4124b3dd69a5e85794834e589c9bb28`），不是上游最新 master 的全部功能。当前版本：**2.2-alpha.55-honeycomb2，测试版**。
+当前移植基线为上游 v1.1.0（`cb5e1667e4124b3dd69a5e85794834e589c9bb28`），不是上游最新 master 的全部功能。当前版本：**2.2-alpha.56-honeycomb3，测试版**。
 
 ## 兼容性
 

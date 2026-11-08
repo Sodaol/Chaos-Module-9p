@@ -45,6 +45,7 @@ unsafe extern "C" fn chaos_honeycomb_input(code: u32, x: i32, y: i32, count: usi
         }
         12 => return EDGE_BACK as u32,
         13 => return CAMERA.moving() as u32,
+        14 => return CAMERA.zooming() as u32,
         7 => return (!EDGE_BACK && CAMERA.can_click()) as u32,
         _ => {}
     }

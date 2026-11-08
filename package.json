@@ -1,7 +1,7 @@
 {
   "name": "chaos-n67-verification",
   "private": true,
-  "version": "2.2.0-alpha.55",
+  "version": "2.2.0-alpha.56",
   "dependencies": {
     "fengari": "0.1.5",
     "luaparse": "0.3.1"

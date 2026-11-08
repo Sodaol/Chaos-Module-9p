@@ -7,6 +7,7 @@ typedef signed int i32; typedef signed short i16;
 #define FN(a,t) ((t)(a))
 #define MAX_APPS 192u
 #define GRID_CLASS 0x2c69e840u
+#define HC_INPUT_CHAIN (256u | 512u | 65536u | 131072u)
 static int hc_ptr(u32 p){return !(p&3u)&&((p>=0x20000000u&&p<0x20100000u)||(p>=0x3c000020u&&p<0x3f000000u));}
 static int hc_strptr(u32 p){return (p>=0x20000000u&&p<0x20100000u)||(p>=0x2c080000u&&p<0x2c800000u)||(p>=0x3c000020u&&p<0x3f000000u);}
 static void hc_flag(u32 o,u32 bits,int on){FN(on?0xc23ba45u:0xc23babbu,void(*)(u32,u32))(o,bits);}
@@ -32,6 +33,7 @@ typedef struct {
  u32 overlay, grid, hidden, hash, count, built;
  u32 dirty, edit_requested, suspended_grid;
  u32 refresh_timer, motion_timer, last_scan, active_page, enabled;
+ u32 pressed_item, rescale_pending, entry_page;
  i32 width, height, origin_x, origin_y;
  hc_Item items[MAX_APPS];
 } hc_State;
@@ -51,6 +53,8 @@ static void hc_retire(hc_State *s) {
  s->built = 0;
  s->hash = 0;
  s->edit_requested = 0;
+ s->pressed_item = 0;
+ s->rescale_pending = 0;
  if (hc_ptr(overlay)) hc_erase(overlay);
 }
 
@@ -64,7 +68,7 @@ static void hc_motion(u32 timer) {
  if (s->hidden && s->overlay && *(volatile u8 *)0x200ca379u == 2 &&
      FN(0xc44a5adu, u32(*)(u32))(0xffffffffu) == s->active_page) {
   s->dirty |= chaos_honeycomb_input(11, 0, 0, s->count);
-  if (s->dirty) {
+  if (s->dirty || (s->rescale_pending && !chaos_honeycomb_input(13, 0, 0, s->count))) {
    s->dirty = 0;
    hc_update_frames(s);
    return;
@@ -81,6 +85,22 @@ static void hc_wake_motion(hc_State *s) {
 }
 
 
+/* One fixed touch surface owns the whole gesture. Moving icon objects never
+ * participate in input hit testing or in the system scroll/gesture chain.
+ */
+static u32 hc_hit_item(hc_State *s, i32 x, i32 y) {
+ for (u32 i = s->built; i > 0; --i) {
+  const hc_Item *item = &s->items[i - 1];
+  if (!item->visible || !item->diameter) continue;
+  i32 radius = (i32)item->diameter / 2;
+  i32 dx = x - item->x - radius;
+  i32 dy = y - item->y - radius;
+  if (dx < -radius || dx > radius || dy < -radius || dy > radius) continue;
+  if (dx * dx + dy * dy <= radius * radius) return i;
+ }
+ return 0;
+}
+
 static void hc_ui_event(u32 e) {
  if (!hc_ptr(e)) return;
  hc_State *s = hc_state();
@@ -92,39 +112,49 @@ static void hc_ui_event(u32 e) {
   if (object_id == s->suspended_grid) s->suspended_grid = 0;
   return;
  }
- if (!s->hidden || !hc_ptr(object_id)) return;
- if (code == 5u && object_id != s->overlay &&
+ if (!s->hidden || object_id != s->overlay || !hc_ptr(object_id)) return;
+ if (code == 5u && s->pressed_item &&
      chaos_honeycomb_input(7, 0, 0, s->count)) {
-  // Restore the native list for editing on the next owner tick.
   s->edit_requested = 1;
+  s->pressed_item = 0;
   chaos_honeycomb_input(3, 0, 0, s->count);
   return;
  }
- if (code == 7u && object_id != s->overlay && !s->edit_requested &&
-     chaos_honeycomb_input(7, 0, 0, s->count)) {
+ if (code == 7u) {
+  u32 pressed = s->pressed_item;
+  s->pressed_item = 0;
+  if (!pressed || pressed > s->built || s->edit_requested ||
+      !chaos_honeycomb_input(7, 0, 0, s->count)) return;
   u32 hash;
   if (!hc_scan(s, &hash, 0) || hash != s->hash) return;
-  for (u32 i = 0; i < s->built; ++i) {
-   if (s->items[i].cell != object_id) continue;
-   u32 saved = RD(e + 12u);
-   RD(e + 12u) = s->items[i].id;
-   FN(0xc2a1dd5u, void(*)(u32))(e);
-   RD(e + 12u) = saved;
-   return;
-  }
+  /* Stock click consumes current_target and the app ID. */
+  u32 saved_data = RD(e + 12u);
+  RD(e + 4u) = s->items[pressed - 1].cell;
+  RD(e + 12u) = s->items[pressed - 1].id;
+  FN(0xc2a1dd5u, void(*)(u32))(e);
+  RD(e + 4u) = object_id;
+  RD(e + 12u) = saved_data;
+  return;
  }
  if (code == 3u || code == 8u) {
+  if (code == 3u) s->pressed_item = 0;
   chaos_honeycomb_input(code, 0, 0, s->count);
   hc_wake_motion(s);
   return;
  }
  if (code != 1u && code != 2u) return;
  u32 indev = RD(0x200bf388u);
- if (!hc_ptr(indev)) return;
+ if (!hc_ptr(indev)) {
+  s->pressed_item = 0;
+  chaos_honeycomb_input(3, 0, 0, s->count);
+  return;
+ }
  i16 point[2];
  FN(0xc239f93u, void(*)(u32, i16 *))(indev, point);
- s->dirty |= chaos_honeycomb_input(code, (point[0] - s->origin_x) * 336 / s->width,
-                                 (point[1] - s->origin_y) * 480 / s->height, s->count);
+ i32 x = point[0] - s->origin_x;
+ i32 y = point[1] - s->origin_y;
+ if (code == 1u) s->pressed_item = hc_hit_item(s, x, y);
+ s->dirty |= chaos_honeycomb_input(code, x * 336 / s->width, y * 480 / s->height, s->count);
  if (s->dirty) hc_wake_motion(s);
  u32 bubble = chaos_honeycomb_input(12, 0, 0, s->count);
  if (!!(RD(object_id + 0x1cu) & 65536u) != bubble)
@@ -162,6 +192,9 @@ static void hc_set_diameter(hc_Item *item,u32 diameter){
 }
 
 static void hc_update_frames(hc_State *s) {
+ u32 defer_scale = chaos_honeycomb_input(13, 0, 0, s->count) &&
+                   !chaos_honeycomb_input(14, 0, 0, s->count);
+ s->rescale_pending = defer_scale;
  for (u32 i = 0; i < s->built; ++i) {
   hc_Item *item = &s->items[i];
   i32 f[4];
@@ -174,6 +207,7 @@ static void hc_update_frames(hc_State *s) {
   u32 diameter = (u32)f[2] * (u32)s->width / 336u;
   diameter = (diameter + 2u) & ~3u;
   if (!diameter) diameter = 4;
+  if (defer_scale && item->diameter) diameter = item->diameter;
   i32 x = f[0] * s->width / 336 - (i32)diameter / 2;
   i32 y = f[1] * s->height / 480 - (i32)diameter / 2;
   if (item->diameter != diameter) hc_size(item->cell, diameter, diameter);
@@ -191,8 +225,7 @@ static int hc_add_icon(hc_State *s,u32 index){
  u32 cell=hc_object(s->overlay);
  if(!cell)return 0;
  hc_plain(cell);
- hc_flag(cell, 2 | 65536 | 8192, 1);
- if (!hc_event(cell, (u32)hc_ui_event, 0, 0)) { hc_erase(cell); return 0; }
+ hc_flag(cell, 2u | HC_INPUT_CHAIN, 0);
 
  u32 circle=hc_object(cell);
  if(!circle){hc_erase(cell);return 0;}
@@ -245,9 +278,8 @@ static void hc_bind_refresh(hc_State *s, u32 enabled) {
  }
 }
 
-void chaos_honeycomb_update(u32 enabled) {
+static void hc_update(u32 enabled, u32 entry_page, u32 entry_root) {
  hc_State *s = hc_state();
- s->enabled = enabled;
  if (!enabled) {
   if (s->refresh_timer) hc_bind_refresh(s, 0);
   if (s->overlay || s->grid) hc_retire(s);
@@ -256,12 +288,12 @@ void chaos_honeycomb_update(u32 enabled) {
  }
  if (*(volatile u8 *)0x200ca379u != 2) return;
  hc_bind_refresh(s, 1);
- u32 top = FN(0xc44a5adu, u32(*)(u32))(0xffffffffu);
+ u32 top = entry_page ? entry_page : FN(0xc44a5adu, u32(*)(u32))(0xffffffffu);
  if (!hc_ptr(top) || RD(top + 0x14u) != 0x100000u) {
   s->suspended_grid = 0;
   return;
  }
- u32 root = RD(top + 0x2cu);
+ u32 root = entry_root ? entry_root : RD(top + 0x2cu);
  u32 grid = RD(0x200cb4c0u);
  if (!hc_ptr(root) || !hc_ptr(grid) || !hc_ptr(grid + 0x894u) || RD(grid) != GRID_CLASS ||
      !hc_childof(root, grid) || RD(grid + 0x880u) != 1u) {
@@ -270,7 +302,11 @@ void chaos_honeycomb_update(u32 enabled) {
   return;
  }
  u32 manager = RD(0x200cacd0u);
- u32 face_visible = hc_ptr(manager) && hc_ptr(manager + 0x6cu) &&
+ /* The incoming launcher owns the root saved by its stock on_create.
+  * The watchface-visible byte may still describe the outgoing face.
+  */
+ u32 native_entry = entry_page || root == RD(0x200cae00u);
+ u32 face_visible = !native_entry && hc_ptr(manager) && hc_ptr(manager + 0x6cu) &&
                     !*(volatile u8 *)(manager + 0x6cu) &&
                     *(volatile u8 *)(manager + 0x6du);
  if (face_visible) {
@@ -326,7 +362,8 @@ void chaos_honeycomb_update(u32 enabled) {
   hc_prop(overlay, 0x20, 0xff000000u);
   hc_prop(overlay, 0x21, 255);
   FN(0xc23c8b9u, void(*)(u32,u32,u32,i32,i32))(overlay, grid, 1, 0, 0);
-  hc_flag(overlay, 1 | 2 | 65536, 1);
+  hc_flag(overlay, HC_INPUT_CHAIN, 0);
+  hc_flag(overlay, 1u | 2u | 8192u, 1);
   if (!hc_event(overlay, (u32)hc_ui_event, 0, 0) ||
       !hc_event_once(grid, (u32)hc_ui_event, 35, 0)) {
    hc_retire(s);
@@ -363,4 +400,54 @@ void chaos_honeycomb_update(u32 enabled) {
    hc_update_frames(s);
   }
  }
+}
+
+/* The N67 launcher descriptor's on_create slot is writable. Resolve the live
+ * descriptor by key and verify the exact stock callback before replacing it.
+ */
+static void hc_prepare_entry(u32 page, u32 root) {
+ hc_State *s = hc_state();
+ if (s->enabled && page == s->entry_page && hc_ptr(root) &&
+     root == RD(0x200cae00u)) {
+  FN(0xc23c881u, void(*)(u32))(root);
+  hc_update(1, page, root);
+ }
+}
+
+static u32 hc_launcher_create(u32 page, u32 root, u32 data) {
+ u32 result = FN(0xc2a31d5u, u32(*)(u32,u32,u32))(page, root, data);
+ hc_prepare_entry(page, root);
+ return result;
+}
+
+static u32 hc_launcher_resume(u32 page) {
+ u32 result = FN(0xc29eff9u, u32(*)(u32))(page);
+ if (hc_ptr(page) && page == hc_state()->entry_page)
+  hc_prepare_entry(page, RD(page + 0x2cu));
+ return result;
+}
+
+static void hc_bind_entry(hc_State *s, u32 enabled) {
+ if (enabled && s->entry_page) return;
+ if (!enabled && !s->entry_page) return;
+ u32 page = FN(0xc448749u, u32(*)(u32))(0x100000u);
+ if (!hc_ptr(page) || !hc_ptr(page + 0x4cu) || RD(page + 0x14u) != 0x100000u) return;
+ u32 callback = (u32)hc_launcher_create | 1u;
+ u32 resume = (u32)hc_launcher_resume | 1u;
+ if (enabled && RD(page + 0x48u) == 0xc2a31d5u) {
+  s->entry_page = page;
+  RD(page + 0x48u) = callback;
+  if (RD(page + 0x4cu) == 0xc29eff9u) RD(page + 0x4cu) = resume;
+ } else if (!enabled && page == s->entry_page) {
+  if (RD(page + 0x48u) == callback) RD(page + 0x48u) = 0xc2a31d5u;
+  if (RD(page + 0x4cu) == resume) RD(page + 0x4cu) = 0xc29eff9u;
+  s->entry_page = 0;
+ }
+}
+
+void chaos_honeycomb_update(u32 enabled) {
+ hc_State *s = hc_state();
+ s->enabled = enabled;
+ hc_bind_entry(s, enabled);
+ hc_update(enabled, 0, 0);
 }
