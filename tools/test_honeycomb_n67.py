@@ -10,11 +10,18 @@ class HoneycombBand(NativeBand):
         self.point = (0, 0)
         self.launches = []
         self.refreshes = []
+        self.back_posts = []
         self.launcher_page = 0
         self.check_back_dispatch = False
         super().__init__(base)
 
     def hook(self, u, a, n, ud):
+        if 0xc4490b8 <= a < 0xc4490d8:
+            return
+        if a == 0xc080300:
+            assert u.reg_read(UC_ARM_REG_R0) == 0, 'explicit exit was consumed'
+            u.reg_write(UC_ARM_REG_PC, self.back_dispatch_return)
+            return
         if self.check_back_dispatch and 0xc44d730 <= a <= 0xc44d738:
             return
         if self.check_back_dispatch and a in (0xc44d73a, 0xc44d74e):
@@ -24,6 +31,15 @@ class HoneycombBand(NativeBand):
             return
         x, y, z = [u.reg_read(r) for r in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2)]
         result = 0
+        if a == 0xc448c60:
+            assert u.mem_read(x+12, 1)[0] == 0x36
+            self.back_posts.append(x)
+            self.back_dispatch_return = u.reg_read(UC_ARM_REG_LR)
+            u.reg_write(UC_ARM_REG_R0, self.launcher_page)
+            u.reg_write(UC_ARM_REG_R1, x+4)
+            u.reg_write(UC_ARM_REG_LR, 0xc080301)
+            u.reg_write(UC_ARM_REG_PC, self.r32(self.launcher_page+0x64))
+            return
         if a == 0xc448748 and x == 0x100000:
             result = self.launcher_page
         elif a == 0xc2a31d4:
@@ -199,7 +215,7 @@ for base in (0x1d100000, 0x1d340000, 0x1c900000):
     b.w8(request+8, 0x36)
     b.send(overlay, 1, (5, 240))
     b.send(overlay, 2, (45, 240))
-    assert b.stock_back_dispatch(page, request) == 0xc44d74e
+    assert b.stock_back_dispatch(page, request) == 0xc44d73a
     b.send(overlay, 8)
     b.send(overlay, 1, (168, 240))
     b.send(overlay, 8)
@@ -237,5 +253,35 @@ for base in (0x1d100000, 0x1d340000, 0x1c900000):
     assert b.call('chaos_honeycomb_input', 2, 220, 280, 1) == 1
     b.call('chaos_honeycomb_frame', 0, frame)
     assert struct.unpack('<ii', b.u.mem_read(frame, 8)) == (220, 280)
-    assert b.call('chaos_honeycomb_input', 12, 0, 0, 1) == 0
+    assert b.call('chaos_honeycomb_input', 8, 0, 0, 1) == 0
     print(f'PASS honeycomb {base:x}: default off, settings switch, staged layout, two-axis drag, native launch, click suppression, zoom, first refresh, cache reuse, native swipe-back dispatch and stock editing fallback')
+
+b = HoneycombBand(0x1d100000)
+b.call('chaos_n67_init', 0x3d800000, 65536, 131072, 8192)
+page = b.setup_grid(1)
+b.switch(3)
+b.top = page
+b.drive()
+overlay = b.overlay()
+assert overlay
+
+def drag(points, end=8):
+    b.send(overlay, 1, points[0])
+    for point in points[1:]:
+        b.send(overlay, 2, point)
+    b.native_timer(b.timers[-1])
+    assert not b.back_posts, 'exited before release'
+    b.send(overlay, end)
+    b.native_timer(b.timers[-1])
+
+drag([(168, 60), (168, 180), (168, 300)])
+drag([(168, 120), (168, 160)])
+drag([(168, 120), (168, 210)], end=3)
+assert not b.back_posts
+drag([(168, 120), (168, 210)])
+b.native_timer(b.timers[-1])
+assert len(b.back_posts) == 1
+request = b.alloc(48)
+b.w8(request+8, 0x36)
+assert b.stock_back_dispatch(page, request) == 0xc44d73a
+print('PASS top pull: reaching the top, short pull and cancellation stay in launcher; deliberate second pull posts one native back')

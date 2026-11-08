@@ -34,6 +34,7 @@ typedef struct {
  u32 dirty, edit_requested, suspended_grid;
  u32 refresh_timer, motion_timer, last_scan, active_page, enabled;
  u32 pressed_item, rescale_pending, entry_page;
+ u32 exit_pending, allow_back;
  i32 width, height, origin_x, origin_y;
  hc_Item items[MAX_APPS];
 } hc_State;
@@ -55,6 +56,7 @@ static void hc_retire(hc_State *s) {
  s->edit_requested = 0;
  s->pressed_item = 0;
  s->rescale_pending = 0;
+ s->exit_pending = 0;
  if (hc_ptr(overlay)) hc_erase(overlay);
 }
 
@@ -67,6 +69,13 @@ static void hc_motion(u32 timer) {
  hc_State *s = hc_state();
  if (s->hidden && s->overlay && *(volatile u8 *)0x200ca379u == 2 &&
      FN(0xc44a5adu, u32(*)(u32))(0xffffffffu) == s->active_page) {
+  if (s->exit_pending) {
+   s->exit_pending = 0;
+   s->allow_back = 1;
+   FN(0xc4490b9u, void(*)(void))();
+   s->allow_back = 0;
+   return;
+  }
   s->dirty |= chaos_honeycomb_input(11, 0, 0, s->count);
   if (s->dirty || (s->rescale_pending && !chaos_honeycomb_input(13, 0, 0, s->count))) {
    s->dirty = 0;
@@ -137,8 +146,9 @@ static void hc_ui_event(u32 e) {
   return;
  }
  if (code == 3u || code == 8u) {
-  if (code == 3u) s->pressed_item = 0;
-  chaos_honeycomb_input(code, 0, 0, s->count);
+  if (code == 3u) { s->pressed_item = 0; s->exit_pending = 0; }
+  else s->exit_pending = chaos_honeycomb_input(code, 0, 0, s->count);
+  if (code == 3u) chaos_honeycomb_input(code, 0, 0, s->count);
   hc_wake_motion(s);
   return;
  }
@@ -153,12 +163,9 @@ static void hc_ui_event(u32 e) {
  FN(0xc239f93u, void(*)(u32, i16 *))(indev, point);
  i32 x = point[0] - s->origin_x;
  i32 y = point[1] - s->origin_y;
- if (code == 1u) s->pressed_item = hc_hit_item(s, x, y);
+ if (code == 1u) { s->exit_pending = 0; s->pressed_item = hc_hit_item(s, x, y); }
  s->dirty |= chaos_honeycomb_input(code, x * 336 / s->width, y * 480 / s->height, s->count);
  if (s->dirty) hc_wake_motion(s);
- u32 bubble = chaos_honeycomb_input(12, 0, 0, s->count);
- if (!!(RD(object_id + 0x1cu) & 65536u) != bubble)
-  hc_flag(object_id, 65536, bubble);
 }
 
 /* Scan the already ordered visible desktop chain. No apps.json/order writes. */
@@ -437,7 +444,7 @@ static u32 hc_launcher_back(u32 page, u32 request) {
      page == s->entry_page && page == s->active_page &&
      hc_ptr(request) && hc_ptr(request + 8u) &&
      *(volatile u8 *)(request + 8u) == 0x36u &&
-     !chaos_honeycomb_input(12, 0, 0, s->count)) return 1;
+     !s->allow_back) return 1;
  return FN(0xc2a4f55u, u32(*)(u32,u32))(page, request);
 }
 

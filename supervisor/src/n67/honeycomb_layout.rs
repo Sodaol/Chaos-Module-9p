@@ -229,7 +229,7 @@ impl Camera {
         }
         true
     }
-    fn clamp(&mut self, count: usize) {
+    fn update_bounds(&mut self, count: usize) {
         let count = count.min(MAX_ICONS);
         if self.bounds_count != count {
             self.min = Point::default();
@@ -243,6 +243,19 @@ impl Camera {
             }
             self.bounds_count = count;
         }
+    }
+
+    fn top_limit(&self) -> i32 {
+        -self.min.y * self.zoom + (HEIGHT / 2 - 48) * ONE
+    }
+
+    pub(crate) fn at_top(&mut self, count: usize) -> bool {
+        self.update_bounds(count);
+        self.pan.y >= self.top_limit()
+    }
+
+    fn clamp(&mut self, count: usize) {
+        self.update_bounds(count);
         let x = self
             .pan
             .x
@@ -250,7 +263,7 @@ impl Camera {
         let y = self
             .pan
             .y
-            .clamp(-self.max.y * self.zoom - (HEIGHT / 2 - 48) * ONE, -self.min.y * self.zoom + (HEIGHT / 2 - 48) * ONE);
+            .clamp(-self.max.y * self.zoom - (HEIGHT / 2 - 48) * ONE, self.top_limit());
         if x != self.pan.x {
             self.velocity.x = 0;
         }
