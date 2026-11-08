@@ -20,6 +20,9 @@ mod beautify_restore;
 #[path="n67/desktop_scale.rs"]
 mod desktop_scale;
 #[cfg(feature="n67")]
+#[path="n67/honeycomb.rs"]
+mod honeycomb;
+#[cfg(feature="n67")]
 #[path="n67/keyboard.rs"]
 mod keyboard;
 #[cfg(feature="n67")]

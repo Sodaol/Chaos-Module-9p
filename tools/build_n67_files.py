@@ -6,7 +6,7 @@ def compile_files():
  zig=os.environ.get('CHAOS_ZIG') or shutil.which('zig') or 'zig'
  src=G/'files.c';obj=G/'files.o'
  text=(R/'n67/files/integration.c').read_text('utf-8')
- for name in ['platform_n67.c.in','core.c']:
+ for name in ['platform_n67.c.in','core.c','honeycomb.c']:
   text=text.replace('#include "'+name+'"',(R/'n67/files'/name).read_text('utf-8'))
  src.write_text(text,'utf-8')
  subprocess.run([sys.executable,str(R/'build-support/work/wasm/cnocomment.py'),str(src),str(G/'files.stripped.c')],check=True)

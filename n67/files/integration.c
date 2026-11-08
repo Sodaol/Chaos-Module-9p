@@ -177,3 +177,5 @@ __attribute__((naked)) void chaos_n67_rotate_display(u32 display,u32 rotation){
   "1: .word 0x0c46c777\n"
  );
 }
+
+#include "honeycomb.c"

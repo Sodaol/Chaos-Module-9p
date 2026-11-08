@@ -430,6 +430,8 @@ pub(crate) unsafe extern "C" fn chaos_shake_timer(_t: u32) {
     #[cfg(feature="n67")]
     crate::desktop_scale::tick();
     #[cfg(feature="n67")]
+    crate::honeycomb::tick();
+    #[cfg(feature="n67")]
     crate::notifications::tick();
     // 5. 摇一摇: 冷却 + 消费旗标 + 切表盘
     let cool = st_rd!(SHAKE_COOL);

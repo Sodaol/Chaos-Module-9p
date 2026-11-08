@@ -85,7 +85,7 @@ unsafe fn visible(o:u32)->bool{
     x<336&&r>=0&&y<480&&b>=0
 }
 unsafe fn markers(o:u32,depth:u32,budget:&mut u32)->u32{
-    if depth>14||*budget==0||!visible(o){return 0;}*budget-=1;let mut mask=0;
+    if depth>14||*budget==0||!visible(o){return 0;}*budget-=1;let mut mask=if o==crate::honeycomb::chaos_honeycomb_overlay(){1}else{0};
     let mut class=rd(o as *const u32);let mut image=false;
     if class==0x2c69e840{mask|=1;}
     // N67 native watchface image widgets use memory descriptors, not paths.

@@ -65,7 +65,7 @@ unsafe fn save_deferred(){
  let v=(LENS_SW|(PITCH_SW<<1)|(INSET_SW<<2)) as u8;
  let fd=fw_api::open(b"/data/chaos/applist.tmp\0".as_ptr(),2|4|8,0o640);
  let ok=if fd<0{false}else{let n=fw_api::write(fd,&v,1);let close=fw_api::close(fd);n==1&&close==0&&fw_api::rename(b"/data/chaos/applist.tmp\0".as_ptr(),CFG.as_ptr())==0};
- if ok{SAVED=v;}else{LENS_SW=(SAVED&1) as u32;PITCH_SW=((SAVED>>1)&1) as u32;INSET_SW=((SAVED>>2)&1) as u32;crate::notifications::request("桌面设置保存失败\0".as_bytes());}
+ if ok{SAVED=v;}else if crate::honeycomb::enabled(){CFG_DIRTY=1;return;}else{LENS_SW=(SAVED&1) as u32;PITCH_SW=((SAVED>>1)&1) as u32;INSET_SW=((SAVED>>2)&1) as u32;crate::notifications::request("桌面设置保存失败\0".as_bytes());}
  crate::render_req(28);
 }
 pub(crate) unsafe fn lens_on() -> bool {
@@ -74,6 +74,7 @@ pub(crate) unsafe fn lens_on() -> bool {
 }
 
 pub(crate) unsafe fn set_lens(on: bool) {
+    if on { crate::honeycomb::set_enabled(false); }
     ensure_loaded();
     let v = if on { 1 } else { 0 };
     if st_rd!(LENS_SW) == v {
@@ -89,6 +90,7 @@ pub(crate) unsafe fn pitch_on() -> bool {
 }
 
 pub(crate) unsafe fn set_pitch(on: bool) {
+    if on { crate::honeycomb::set_enabled(false); }
     ensure_loaded();
     let v = if on { 1 } else { 0 };
     if st_rd!(PITCH_SW) == v {
@@ -104,6 +106,7 @@ pub(crate) unsafe fn inset_on() -> bool {
 }
 
 pub(crate) unsafe fn set_inset(on: bool) {
+    if on { crate::honeycomb::set_enabled(false); }
     ensure_loaded();
     let v = if on { 1 } else { 0 };
     if st_rd!(INSET_SW) == v {
@@ -346,14 +349,18 @@ impl crate::page::Page for AppListPage{
  fn fill_title(&self,p:*mut u8){unsafe{crate::put_str(p,"应用列表设置\0".as_bytes());}}
  fn render(&self,c:&crate::page::PageCtx)->crate::page::PageResult{unsafe{
   let mut prev=c.title;
-  for (i,name,on) in [(0,"缩放同 RW6\0",lens_on()),(1,"排距同 RW6\0",pitch_on()),(2,"外列内缩\0",inset_on())]{
+  for (i,name,on) in [(0,"缩放同 RW6\0",lens_on()),(1,"排距同 RW6\0",pitch_on()),(2,"外列内缩\0",inset_on()),(3,"蜂窝视图\0",crate::honeycomb::enabled())]{
    prev=crate::page::build_row(c,prev,i,&crate::page::RowSpec::switch(name.as_bytes()));
    if prev==0{return Err(crate::page::PageError::RowFailed(i));}
    fw_api::row_update(prev,fw_api::NONE_PTR,fw_api::NONE_PTR,fw_api::NONE_PTR,0,on as u8);
   }Ok(())
  }}
  fn on_click(&self,_:usize){}
- fn is_switch_row(&self,i:usize)->bool{i<3}
- fn on_switch(&self,i:usize){unsafe{match i{0=>set_lens(!lens_on()),1=>set_pitch(!pitch_on()),2=>set_inset(!inset_on()),_=>{}}}}
+ fn is_switch_row(&self,i:usize)->bool{i<4}
+ fn on_switch(&self,i:usize){unsafe{match i{0=>set_lens(!lens_on()),1=>set_pitch(!pitch_on()),2=>set_inset(!inset_on()),3=>{
+  let on=!crate::honeycomb::enabled();
+  if on { set_lens(false); set_pitch(false); set_inset(false); }
+  crate::honeycomb::set_enabled(on);
+ },_=>{}}crate::render_req(28);}}
 }
 pub static PAGE:AppListPage=AppListPage;

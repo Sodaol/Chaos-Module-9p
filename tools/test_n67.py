@@ -13,6 +13,9 @@ class Band:
  def __init__(self,base):
   self.base=base;self.u=Uc(UC_ARCH_ARM,UC_MODE_THUMB)
   for a,n in [(base&~4095,(len(IMAGE)+8191)&~4095),(0x20000000,0x100000),(0x3d000000,0x1000000),(0xc080000,0x800000),(0x2c080000,0x800000),(0x100000,0x1000)]:self.u.mem_map(a,n)
+  data_alias = base + 0x20000000
+  if data_alias < 0x3d000000:
+   self.u.mem_map(data_alias, (len(IMAGE) + 4095) & ~4095)
   fw=Path(os.environ.get('CHAOS_FW',str(R.parent/'fw/data/ota/app/vela_ap.bin'))).read_bytes();self.u.mem_write(0xc080000,fw);self.u.mem_write(0x2c080000,fw)
   self.u.mem_write(base,bytes(slide(IMAGE,META,base)));self.u.mem_write(0x100000,b'\x00\xbe')
   self.next=0x3d010000;self.objects={};self.events=[];self.timers=[];self.files={};self.fds={};self.dirs={};self.calls=[];self.top=0;self.deleted=set()
